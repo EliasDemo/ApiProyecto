@@ -89,6 +89,14 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->name('vm.alumno.proyectos.show');
 });
 
+Route::any('/debug-method', function (Request $request) {
+    return response()->json([
+        'method'  => $request->method(),
+        'headers' => $request->headers->all(),
+        'body'    => $request->all(),
+    ]);
+});
+
 /**
  * 2️⃣ RUTAS DE GESTIÓN (con permisos por endpoint)
  */
