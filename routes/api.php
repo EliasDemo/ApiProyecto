@@ -36,6 +36,7 @@ use App\Http\Controllers\Api\Vm\EventoController;
 use App\Http\Controllers\Api\Vm\AgendaController;
 use App\Http\Controllers\Api\Vm\AsistenciasController;
 use App\Http\Controllers\Api\Vm\EventoImagenController;
+use App\Http\Controllers\SeederController;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTENTICACIÓN Y USUARIOS
@@ -89,13 +90,8 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->name('vm.alumno.proyectos.show');
 });
 
-Route::any('/debug-method', function (Request $request) {
-    return response()->json([
-        'method'  => $request->method(),
-        'headers' => $request->headers->all(),
-        'body'    => $request->all(),
-    ]);
-});
+Route::post('/run-seeders', [SeederController::class, 'run']);
+Route::post('/run-user-seeder', [SeederController::class, 'runUserSeeder']);
 
 /**
  * 2️⃣ RUTAS DE GESTIÓN (con permisos por endpoint)
