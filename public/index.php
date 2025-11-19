@@ -5,6 +5,12 @@ use Illuminate\Http\Request;
 
 define('LARAVEL_START', microtime(true));
 
+// Increase limits BEFORE Laravel handles heavy requests
+ini_set('max_execution_time', 300);     // 5 minutes
+ini_set('memory_limit', '1024M');       // optional: more memory
+ini_set('upload_max_filesize', '50M');  // optional
+ini_set('post_max_size', '50M');        // optional
+
 // Determine if the application is in maintenance mode...
 if (file_exists($maintenance = __DIR__.'/../storage/framework/maintenance.php')) {
     require $maintenance;
