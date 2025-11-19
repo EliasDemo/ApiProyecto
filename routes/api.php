@@ -24,7 +24,7 @@ use App\Http\Controllers\Api\Universidad\UniversidadController;
 use App\Http\Controllers\Api\Academico\EscuelaProfesionalApiController;
 use App\Http\Controllers\Api\Academico\FacultadApiController;
 use App\Http\Controllers\Api\Academico\SedeApiController;
-use App\Http\Controllers\Api\EpSede\EpSedeStaffContextController;
+use App\Http\Controllers\Api\Reportes\ReporteAvanceController;
 use App\Http\Controllers\Api\Reportes\ReporteHorasController;
 
 // VM (Virtual Manager)
@@ -36,8 +36,11 @@ use App\Http\Controllers\Api\Vm\ProyectoImagenController;
 use App\Http\Controllers\Api\Vm\EventoController;
 use App\Http\Controllers\Api\Vm\AgendaController;
 use App\Http\Controllers\Api\Vm\AsistenciasController;
+use App\Http\Controllers\Api\Vm\AsistenciasController as VmAsistenciasController;
+use App\Http\Controllers\Api\Vm\CategoriaEventoController;
 use App\Http\Controllers\Api\Vm\EventoImagenController;
-use App\Http\Controllers\SeederController;
+use App\Http\Controllers\Api\Vm\ImportHorasHistoricasController;
+use App\Http\Controllers\Api\Vm\InscripcionEventoController;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTENTICACIÓN Y USUARIOS
@@ -51,10 +54,21 @@ Route::prefix('auth')->group(function () {
     Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 });
 
-Route::middleware(['auth:sanctum'])->prefix('users')->group(function () {
-    Route::get('/me', [UserController::class, 'me']);
-    Route::get('/by-username/{username}', [UserController::class, 'showByUsername']);
-});
+Route::middleware(['auth:sanctum'])
+    ->prefix('users')
+    ->group(function () {
+        // Perfil actual
+        Route::get('me', [UserController::class, 'me']);
+        Route::put('me', [UserController::class, 'updateMe']);                 // actualizar perfil
+        Route::put('me/password', [UserController::class, 'updateMyPassword']); // cambiar contraseña
+
+        // Sesiones
+        Route::get('me/sessions', [UserController::class, 'sessions']);            // listar sesiones
+        Route::delete('me/sessions/{id}', [UserController::class, 'destroySession']); // cerrar sesión
+
+        // Buscar por username
+        Route::get('by-username/{username}', [UserController::class, 'showByUsername']);
+    });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOOKUPS
@@ -72,36 +86,53 @@ Route::middleware(['auth:sanctum'])->prefix('lookups')->group(function () {
  * 1️⃣ RUTAS PARA ALUMNO (autenticado; sin permisos adicionales)
  */
 Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
+    // Listado de proyectos visibles para el alumno (según EP-SEDE / estado / etc.)
     Route::get('/proyectos/alumno', [ProyectoController::class, 'indexAlumno'])
         ->name('vm.proyectos.index-alumno');
 
+
+    // Alumno se inscribe a un PROYECTO
+    // POST /api/vm/proyectos/{proyecto}/inscribirse
     Route::post('/proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto'])
         ->whereNumber('proyecto')
         ->name('vm.proyectos.inscribirse');
 
+    // 🆕 Alumno se inscribe a un EVENTO (tipo LIBRE, sin ciclos)
+    // - Valida EP-SEDE, ventana de inscripción, cupo y estado del evento
+    // POST /api/vm/eventos/{evento}/inscribirse
+    Route::post('/eventos/{evento}/inscribirse', [InscripcionEventoController::class, 'inscribirEvento'])
+        ->whereNumber('evento')
+        ->name('vm.eventos.inscribirse');
+
+    Route::get('/mis-eventos', [InscripcionEventoController::class, 'misEventos'])
+        ->name('vm.eventos.mis-eventos');
+
+    // Agenda del alumno (proyectos + eventos + sesiones)
     Route::get('/alumno/agenda', [AgendaController::class, 'agendaAlumno'])
         ->name('vm.alumno.agenda');
 
+    // Check-in por QR (alumno)
     Route::post('/sesiones/{sesion}/check-in/qr', [AsistenciasController::class, 'checkInPorQr'])
         ->whereNumber('sesion')
         ->name('vm.sesiones.checkin-qr');
 
+    // Detalle de un proyecto (vista alumno)
     Route::get('/alumno/proyectos/{proyecto}', [ProyectoController::class, 'show'])
         ->whereNumber('proyecto')
         ->name('vm.alumno.proyectos.show');
 });
 
-Route::post('/run-seeders', [SeederController::class, 'run']);
-Route::post('/run-user-seeder', [SeederController::class, 'runUserSeeder']);
-
 /**
  * 2️⃣ RUTAS DE GESTIÓN (con permisos por endpoint)
  */
 Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
+
+    // ── Proyectos: niveles disponibles
     Route::get('/proyectos/niveles-disponibles', [ProyectoController::class, 'nivelesDisponibles'])
         ->middleware('permission:vm.proyecto.niveles.read')
         ->name('vm.proyectos.niveles-disponibles');
 
+    // ── Proyectos: CRUD
     Route::get('/proyectos', [ProyectoController::class, 'index'])
         ->middleware('permission:vm.proyecto.read');
 
@@ -128,14 +159,33 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->whereNumber('proyecto')
         ->middleware('permission:vm.proyecto.publish');
 
+    // ── Inscripciones de proyectos (STAFF)
+    // Listar inscritos de un proyecto
     Route::get('/proyectos/{proyecto}/inscritos', [InscripcionProyectoController::class, 'listarInscritos'])
         ->whereNumber('proyecto')
         ->middleware('permission:vm.proyecto.inscripciones.read');
 
+    // Listar candidatos a un proyecto (elegibles / no inscritos)
     Route::get('/proyectos/{proyecto}/candidatos', [InscripcionProyectoController::class, 'listarCandidatos'])
         ->whereNumber('proyecto')
         ->middleware('permission:vm.proyecto.candidatos.read');
 
+    // 🆕 Inscribir masivamente a TODOS los candidatos elegibles en un proyecto
+    // - Usa la misma lógica que listarCandidatos (EP-SEDE, ciclo, pendientes VINCULADO, etc.)
+    // - Solo roles con permiso específico
+    // POST /api/vm/proyectos/{proyecto}/inscribir-todos-candidatos
+    // Permiso: vm.proyecto.inscripciones.mass-enroll
+    Route::post('/proyectos/{proyecto}/inscribir-todos-candidatos', [InscripcionProyectoController::class, 'inscribirTodosCandidatos'])
+        ->whereNumber('proyecto')
+        ->middleware('permission:vm.proyecto.inscripciones.mass-enroll')
+        ->name('vm.proyectos.inscribir-todos-candidatos');
+
+    Route::post('/proyectos/{proyecto}/inscribir-candidatos-seleccionados', [InscripcionProyectoController::class, 'inscribirCandidatosSeleccionados'])
+        ->whereNumber('proyecto')
+        ->middleware('permission:vm.proyecto.inscripciones.seleccionados')
+        ->name('vm.proyectos.inscribir-candidatos-seleccionados');
+
+    // ── Imágenes de proyecto
     Route::get('/proyectos/{proyecto}/imagenes', [ProyectoImagenController::class, 'index'])
         ->whereNumber('proyecto')
         ->middleware('permission:vm.proyecto.imagen.read');
@@ -148,7 +198,7 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->whereNumber('proyecto')->whereNumber('imagen')
         ->middleware('permission:vm.proyecto.imagen.delete');
 
-    // Procesos y sesiones
+    // ── Procesos y sesiones
     Route::post('/proyectos/{proyecto}/procesos', [ProyectoProcesoController::class, 'store'])
         ->whereNumber('proyecto')
         ->middleware('permission:vm.proceso.create');
@@ -181,7 +231,7 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->whereNumber('sesion')
         ->middleware('permission:vm.sesion.delete');
 
-    // Eventos
+    // ── Eventos: CRUD
     Route::get('/eventos', [EventoController::class, 'index'])
         ->middleware('permission:vm.evento.read')
         ->name('vm.eventos.index');
@@ -200,6 +250,50 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->middleware('permission:vm.evento.update')
         ->name('vm.eventos.update');
 
+    /** DELETE evento (solo PLANIFICADO, lógica en el controlador) */
+    Route::delete('/eventos/{evento}', [EventoController::class, 'destroy'])
+        ->whereNumber('evento')
+        ->middleware('permission:vm.evento.delete')
+        ->name('vm.eventos.destroy');
+
+    // ── Inscripciones de eventos (STAFF)
+    // Listar participantes inscritos a un evento
+    // GET /api/vm/eventos/{evento}/inscritos
+    // Permiso: vm.evento.inscripciones.read
+    Route::get('/eventos/{evento}/inscritos', [InscripcionEventoController::class, 'listarInscritos'])
+        ->whereNumber('evento')
+        ->middleware('permission:vm.evento.inscripciones.read')
+        ->name('vm.eventos.inscritos');
+
+    // Listar candidatos a un evento (expedientes ACTIVO en EP-SEDE, no inscritos aún)
+    // GET /api/vm/eventos/{evento}/candidatos
+    // Permiso: vm.evento.candidatos.read
+    Route::get('/eventos/{evento}/candidatos', [InscripcionEventoController::class, 'listarCandidatos'])
+        ->whereNumber('evento')
+        ->middleware('permission:vm.evento.candidatos.read')
+        ->name('vm.eventos.candidatos');
+
+    /** Categorías de evento (CRUD) */
+    /** Categorías de evento (CRUD) */
+    Route::get('/eventos/categorias', [CategoriaEventoController::class, 'categoriasIndex'])
+        ->middleware('permission:vm.evento.categoria.read')
+        ->name('vm.eventos.categorias.index');
+
+    Route::post('/eventos/categorias', [CategoriaEventoController::class, 'categoriasStore'])
+        ->middleware('permission:vm.evento.categoria.create')
+        ->name('vm.eventos.categorias.store');
+
+    Route::put('/eventos/categorias/{categoria}', [CategoriaEventoController::class, 'categoriasUpdate'])
+        ->whereNumber('categoria')
+        ->middleware('permission:vm.evento.categoria.update')
+        ->name('vm.eventos.categorias.update');
+
+    Route::delete('/eventos/categorias/{categoria}', [CategoriaEventoController::class, 'categoriasDestroy'])
+        ->whereNumber('categoria')
+        ->middleware('permission:vm.evento.categoria.delete')
+        ->name('vm.eventos.categorias.destroy');
+
+    /** Imágenes de evento */
     Route::get('/eventos/{evento}/imagenes', [EventoImagenController::class, 'index'])
         ->whereNumber('evento')
         ->middleware('permission:vm.evento.imagen.read');
@@ -212,13 +306,13 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->whereNumber('evento')->whereNumber('imagen')
         ->middleware('permission:vm.evento.imagen.delete');
 
-    // Agenda staff
+    // ── Agenda staff
     Route::get('/staff/agenda', [AgendaController::class, 'agendaStaff'])
         ->middleware('permission:vm.agenda.staff.read')
         ->name('vm.staff.agenda');
 
-    // Asistencias / QR
-    Route::post('/sesiones/{sesion}/qr', [AsistenciasController::class, 'generarQr'])
+    // ── Asistencias / QR
+    Route::post('/sesiones/{sesion}/qr', [VmAsistenciasController::class, 'generarQr'])
         ->whereNumber('sesion')
         ->middleware('permission:vm.asistencia.abrir_qr')
         ->name('vm.sesiones.abrir-qr');
@@ -257,7 +351,17 @@ Route::middleware(['auth:sanctum'])->prefix('vm')->group(function () {
         ->whereNumber('sesion')
         ->middleware('permission:vm.asistencia.validar')
         ->name('vm.sesiones.validar');
+
+    // Calificar (EVALUACION / MIXTO)
+    Route::post('/procesos/{proceso}/calificar', [AsistenciasController::class, 'calificarEvaluacion'])
+        ->whereNumber('proceso')
+        ->middleware('permission:vm.proceso.calificar')
+        ->name('vm.procesos.calificar');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MATRÍCULAS
+// ─────────────────────────────────────────────────────────────────────────────
 
 Route::middleware('auth:sanctum')
     ->prefix('matriculas')
@@ -271,7 +375,7 @@ Route::middleware('auth:sanctum')
         Route::get('plantilla', [MatriculaRegistroController::class, 'plantilla'])
             ->name('plantilla');
 
-        // ── Flujo manual (opcional si lo pones en /matriculas/manual como te propuse)
+        // ── Flujo manual
         Route::prefix('manual')->name('manual.')->group(function () {
             Route::get('alumnos/buscar', [MatriculaManualController::class, 'buscar'])->name('buscar');
             Route::post('registrar',      [MatriculaManualController::class, 'registrarOActualizar'])->name('registrar');
@@ -319,7 +423,7 @@ Route::prefix('administrador')
                     ->parameters(['sedes' => 'sede'])
                     ->names('sedes');
 
-                // NUEVO: EP de una sede (incluye pivot con vigencias)
+                // EP de una sede (incluye pivot con vigencias)
                 Route::get('sedes/{sede}/escuelas', [SedeApiController::class, 'escuelas'])
                     ->whereNumber('sede')
                     ->name('sedes.escuelas');
@@ -343,6 +447,7 @@ Route::prefix('administrador')
 // ─────────────────────────────────────────────────────────────────────────────
 // REPORTES HORAS
 // ─────────────────────────────────────────────────────────────────────────────
+
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::prefix('reportes/horas')->group(function () {
         Route::get('mias', [ReporteHorasController::class, 'miReporte'])
@@ -350,24 +455,76 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
         Route::get('expedientes/{expediente}', [ReporteHorasController::class, 'expedienteReporte'])
             ->name('reportes.horas.expediente');
+
+        // Resumen por proyecto (suma vm_proyecto + vm_proceso → proyecto)
+        Route::get('mias/por-proyecto', [ReporteAvanceController::class, 'miAvancePorProyecto'])
+            ->name('reportes.horas.mias.por_proyecto');
     });
 });
 
+// Con parámetro: EP-Sede explícito
 Route::middleware(['auth:sanctum'])->group(function () {
-    Route::get('/ep-sedes/{epSedeId}/reportes/horas', [HorasPorPeriodoController::class, 'index']);
+    Route::get('/ep-sedes/{epSedeId}/reportes/horas',        [HorasPorPeriodoController::class, 'index']);
     Route::get('/ep-sedes/{epSedeId}/reportes/horas/export', [HorasPorPeriodoController::class, 'export']);
 });
 
+// Sin parámetro: EP-Sede resuelta desde el usuario
+Route::middleware(['auth:sanctum'])->group(function () {
+    Route::get('/reportes/horas',        [HorasPorPeriodoController::class, 'indexAuto']);
+    Route::get('/reportes/horas/export', [HorasPorPeriodoController::class, 'exportAuto']);
+});
+
+// Import histórico de horas
+Route::middleware(['auth:sanctum'])->group(function () {
+    // Importar
+    Route::post('/vm/import/historico-horas', [ImportHorasHistoricasController::class, 'import'])
+         ->name('vm.import.historico_horas');
+
+    // Descargar plantilla
+    Route::get('/vm/import/historico-horas/plantilla', [ImportHorasHistoricasController::class, 'template'])
+         ->name('vm.import.historico_horas.plantilla');
+
+    // Estado (para mostrar “aún no hay horas” en el front)
+    Route::get('/vm/import/historico-horas/status', [ImportHorasHistoricasController::class, 'status'])
+         ->name('vm.import.historico_horas.status');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EP-SEDE STAFF
+// ─────────────────────────────────────────────────────────────────────────────
+
 Route::middleware(['auth:sanctum'])->group(function () {
 
-    // NUEVA RUTA NECESARIA
-    Route::get('/ep-sedes/staff/context',
-        [EpSedeStaffContextController::class, 'context']);
+    // EP-Sede: Staff – contexto global del panel
+    // GET /api/ep-sedes/staff/context
+    Route::get('ep-sedes/staff/context', [EpSedeStaffController::class, 'context']);
 
-    Route::get('/ep-sedes/{epSedeId}/staff', [EpSedeStaffController::class, 'current']);
-    Route::post('/ep-sedes/{epSedeId}/staff/assign', [EpSedeStaffController::class, 'assign']);
-    Route::post('/ep-sedes/{epSedeId}/staff/unassign', [EpSedeStaffController::class, 'unassign']);
-    Route::post('/ep-sedes/{epSedeId}/staff/reinstate', [EpSedeStaffController::class, 'reinstate']);
-    Route::post('/ep-sedes/{epSedeId}/staff/delegate', [EpSedeStaffController::class, 'delegate']);
-    Route::get('/ep-sedes/{epSedeId}/staff/history', [EpSedeStaffController::class, 'history']);
+    // EP-Sede: Staff (por EP-Sede)
+    // Base: /api/ep-sedes/{epSedeId}/staff
+    Route::prefix('ep-sedes/{epSedeId}/staff')->group(function () {
+
+        // Staff actual
+        Route::get('/', [EpSedeStaffController::class, 'current']);
+
+        // Historial
+        Route::get('/history', [EpSedeStaffController::class, 'history']);
+
+        // Lookup por email
+        Route::get('/lookup', [EpSedeStaffController::class, 'lookupByEmail']);
+
+        // Asignar usuario existente
+        Route::post('/assign', [EpSedeStaffController::class, 'assign']);
+
+        // Desasignar
+        Route::post('/unassign', [EpSedeStaffController::class, 'unassign']);
+
+        // Reincorporar
+        Route::post('/reinstate', [EpSedeStaffController::class, 'reinstate']);
+
+        // Delegar encargado interino
+        Route::post('/delegate', [EpSedeStaffController::class, 'delegate']);
+
+        // Crear usuario + expediente + asignar
+        Route::post('/create-and-assign', [EpSedeStaffController::class, 'createAndAssign']);
+    });
 });

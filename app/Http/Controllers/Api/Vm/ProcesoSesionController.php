@@ -9,15 +9,22 @@ use App\Http\Resources\Vm\VmSesionResource;
 use App\Models\VmProceso;
 use App\Models\VmSesion;
 use App\Services\Auth\EpScopeService;
+use App\Services\Vm\PlanificacionService;
 use App\Services\Vm\SesionBatchService;
 use App\Support\DateList;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Carbon\Carbon;
 
 class ProcesoSesionController extends Controller
 {
-    /** GET /api/vm/procesos/{proceso}/contexto-edicion
-     *  Devuelve el proceso y sus sesiones (ordenadas) para la UI de edición.
+    public function __construct(private PlanificacionService $plan) {}
+
+    /**
+     * GET /api/vm/procesos/{proceso}/contexto-edicion
+     * @param VmProceso $proceso
+     * @return JsonResponse
      */
     public function edit(VmProceso $proceso): JsonResponse
     {
@@ -28,9 +35,13 @@ class ProcesoSesionController extends Controller
             return response()->json(['ok' => false, 'message' => 'No autorizado para la EP_SEDE del proceso.'], 403);
         }
 
+        // Cargar ciclos y sesiones ordenadas; incluye niveles por sesión
         $proceso->load([
-            'proyecto',
-            'sesiones' => fn($q) => $q->orderBy('fecha')->orderBy('hora_inicio'),
+            'proyecto.ciclos',
+            'sesiones' => fn($q) => $q
+                ->with(['ciclos:id,nivel'])
+                ->orderBy('fecha')
+                ->orderBy('hora_inicio'),
         ]);
 
         return response()->json([
@@ -42,20 +53,23 @@ class ProcesoSesionController extends Controller
         ], 200);
     }
 
-    /** POST /api/vm/procesos/{proceso}/sesiones/batch
-     *  Crea sesiones en lote para un proceso (deja tal cual lo tenías).
+    /**
+     * POST /api/vm/procesos/{proceso}/sesiones/batch
+     * @param VmProceso $proceso
+     * @param SesionBatchRequest $request
+     * @return JsonResponse
      */
-// POST /api/vm/procesos/{proceso}/sesiones/batch
     public function storeBatch(VmProceso $proceso, SesionBatchRequest $request): JsonResponse
     {
         $user = $request->user();
 
-        $proyecto = $proceso->proyecto()->with('periodo')->firstOrFail();
+        /** @var \App\Models\VmProyecto $proyecto */
+        $proyecto = $proceso->proyecto()->with(['periodo','ciclos'])->firstOrFail();
+
         if (!EpScopeService::userManagesEpSede($user->id, (int) $proyecto->ep_sede_id)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para la EP_SEDE del proceso.'], 403);
         }
 
-        // 🔐 Bloqueo por estado: solo si el proyecto está PLANIFICADO
         if ($proyecto->estado !== 'PLANIFICADO') {
             return response()->json([
                 'ok' => false,
@@ -63,11 +77,26 @@ class ProcesoSesionController extends Controller
             ], 409);
         }
 
-        // Fechas dentro del período del proyecto
-        $fechas = DateList::fromBatchPayload($request->validated());
-        $ini = $proyecto->periodo->fecha_inicio->toDateString();
-        $fin = $proyecto->periodo->fecha_fin->toDateString();
+        $payload = $request->validated();
 
+        // Fechas del payload como YYYY-MM-DD (solo fechas, sin horas)
+        /** @var \Illuminate\Support\Collection<string> $fechas */
+        $fechas = DateList::fromBatchPayload($payload);
+
+        // Límite del período del proyecto (robusto a string/Carbon)
+        $iniRaw = $proyecto->periodo->fecha_inicio;
+        $finRaw = $proyecto->periodo->fecha_fin;
+
+        try {
+            $ini = $iniRaw instanceof \Carbon\CarbonInterface ? $iniRaw->toDateString() : Carbon::parse($iniRaw)->toDateString();
+            $fin = $finRaw instanceof \Carbon\CarbonInterface ? $finRaw->toDateString() : Carbon::parse($finRaw)->toDateString();
+        } catch (\Throwable) {
+            // Fallback defensivo ante formatos inesperados
+            $ini = (string)$iniRaw;
+            $fin = (string)$finRaw;
+        }
+
+        // Verificación de rango
         $fuera = $fechas->filter(fn($f) => !($ini <= $f && $f <= $fin))->values();
         if ($fuera->isNotEmpty()) {
             return response()->json([
@@ -78,45 +107,81 @@ class ProcesoSesionController extends Controller
             ], 422);
         }
 
-        $created = SesionBatchService::createFor($proceso, $request->validated());
+        // Creación batch (sin concatenar fecha+hora en PHP)
+        /** @var EloquentCollection<int,VmSesion> $created */
+        $created = new EloquentCollection(SesionBatchService::createFor($proceso, $payload));
+
+        // Asociar niveles si llegan
+        $niveles = collect($request->get('niveles', []))
+            ->map(fn($n) => (int)$n)->filter()->unique()->values();
+
+        if ($niveles->isNotEmpty()) {
+            /** @var \Illuminate\Support\Collection<int,int> $map  nivel => id */
+            $map = $proyecto->ciclos->pluck('id', 'nivel');
+            if ($map->only($niveles)->count() !== $niveles->count()) {
+                return response()->json(['ok' => false, 'message' => 'Algún ciclo no pertenece al proyecto.'], 422);
+            }
+            $ids = $map->only($niveles)->values()->all();
+
+            /** @var VmSesion $s */
+            foreach ($created as $s) {
+                $s->ciclos()->syncWithoutDetaching($ids);
+            }
+        }
+
+        // Devolver sesiones con ciclos cargados
+        $created->each(function (VmSesion $s) {
+            $s->loadMissing('ciclos:id,nivel');
+        });
+
+        // Recalcular plan
+        $this->plan->recalcularYSincronizar($proyecto);
 
         return response()->json(['ok' => true, 'data' => VmSesionResource::collection($created)], 201);
     }
 
-
-    /** GET /api/vm/sesiones/{sesion}/edit
-     *  Devuelve una sesión individual para edición.
+    /**
+     * GET /api/vm/sesiones/{sesion}/edit
+     * @param VmSesion $sesion
+     * @return JsonResponse
      */
     public function editSesion(VmSesion $sesion): JsonResponse
     {
         $user = request()->user();
 
+        /** @var VmProceso $proceso */
         $proceso  = VmProceso::findOrFail($sesion->sessionable_id);
         $proyecto = $proceso->proyecto()->firstOrFail();
 
-        if (!EpScopeService::userManagesEpSede($user->id, (int) $proyecto->ep_sede_id)) {
+        if (!EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para la EP_SEDE del proceso.'], 403);
         }
+
+        // Importante: no reasignar $sesion con el retorno de loadMissing (para el IDE)
+        $sesion->loadMissing('ciclos');
 
         return response()->json(['ok' => true, 'data' => new VmSesionResource($sesion)], 200);
     }
 
-    /** PUT /api/vm/sesiones/{sesion}
-     *  Actualiza campos de una sesión (solo si el proyecto está PLANIFICADO y la sesión no inició/pasó).
+    /**
+     * PUT /api/vm/sesiones/{sesion}
+     * @param Request $request
+     * @param VmSesion $sesion
+     * @return JsonResponse
      */
     public function updateSesion(Request $request, VmSesion $sesion): JsonResponse
     {
         $user = $request->user();
 
-        // Contexto para permisos y estado del proyecto
+        /** @var VmProceso $proceso */
         $proceso  = VmProceso::findOrFail($sesion->sessionable_id);
-        $proyecto = $proceso->proyecto()->firstOrFail();
+        /** @var \App\Models\VmProyecto $proyecto */
+        $proyecto = $proceso->proyecto()->with('ciclos')->firstOrFail();
 
-        if (!EpScopeService::userManagesEpSede($user->id, (int) $proyecto->ep_sede_id)) {
+        if (!EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para la EP_SEDE del proceso.'], 403);
         }
 
-        // 🔐 Solo editable si el proyecto sigue PLANIFICADO
         if ($proyecto->estado !== 'PLANIFICADO') {
             return response()->json([
                 'ok' => false,
@@ -124,64 +189,92 @@ class ProcesoSesionController extends Controller
             ], 409);
         }
 
-        // Validaciones
+        // Validaciones (HH:mm)
         $rules = [
             'fecha'        => ['sometimes','date'],
             'hora_inicio'  => ['sometimes','date_format:H:i'],
-            'hora_fin'     => ['sometimes','date_format:H:i'], // sin 'after' fijo por defecto
+            'hora_fin'     => ['sometimes','date_format:H:i'],
             'lugar'        => ['sometimes','nullable','string','max:255'],
             'enlace'       => ['sometimes','nullable','string','max:255'],
             'observacion'  => ['sometimes','nullable','string'],
+            'niveles'      => ['sometimes','array'],
+            'niveles.*'    => ['integer','between:1,10','distinct'],
         ];
         if ($request->filled('hora_inicio')) {
             $rules['hora_fin'][] = 'after:hora_inicio';
         }
+        /** @var array<string,mixed> $data */
         $data = $request->validate($rules);
 
-        // Caso: llega solo hora_fin (sin hora_inicio) → validar contra la hora_inicio ya guardada
+        // Caso: solo hora_fin (asegurar que > hora_inicio actual)
         if ($request->filled('hora_fin') && !$request->filled('hora_inicio')) {
-            $hi = (string) $sesion->hora_inicio;
-            if ($hi && $request->hora_fin <= $hi) {
-                return response()->json(['ok'=>false,'message'=>'hora_fin debe ser posterior a hora_inicio.'], 422);
+            $hi = (string)$sesion->hora_inicio; // almacenado como HH:MM:SS
+            $hiCmp = substr($hi, 0, 5);         // HH:MM
+            if ($hiCmp && $request->string('hora_fin')->toString() <= $hiCmp) {
+                return response()->json(['ok' => false, 'message' => 'hora_fin debe ser posterior a hora_inicio.'], 422);
             }
         }
 
-        // ✔️ Chequear “editabilidad” con las fechas/hora objetivo (lo que quedaría tras update)
-        $targetFecha = $data['fecha'] ?? (string) $sesion->fecha;
-        $targetHi    = $data['hora_inicio'] ?? (string) $sesion->hora_inicio;
+        // Chequear “editabilidad” con target (fecha/hora resultantes)
+        $targetFecha = (string) ($data['fecha'] ?? (string) $sesion->fecha);
+        $targetHiRaw = (string) ($data['hora_inicio'] ?? (string) $sesion->hora_inicio);
+        $targetHi    = preg_match('/^\d{2}:\d{2}$/', $targetHiRaw) ? $targetHiRaw : substr($targetHiRaw, 0, 5);
 
+        // Clon temporal SOLO para validar (no reasignar $sesion)
+        /** @var VmSesion $tmp */
         $tmp = $sesion->replicate();
         $tmp->fecha = $targetFecha;
-        $tmp->hora_inicio = $targetHi;
+        $tmp->hora_inicio = $targetHi . ':00'; // normaliza a HH:MM:SS para helper
 
-        if (!$this->sesionEditable($tmp, (string) $proyecto->estado)) {
+        if (!$this->sesionEditable($tmp, (string)$proyecto->estado)) {
             return response()->json([
                 'ok'      => false,
                 'message' => 'No se puede editar: la sesión es pasada o ya inició hoy.',
             ], 409);
         }
 
-        $sesion->update($data);
+        // Actualizar (sin niveles)
+        $sesion->update(collect($data)->except('niveles')->all());
 
-        return response()->json(['ok'=>true,'data'=>new VmSesionResource($sesion->fresh())], 200);
+        // Sincronizar niveles si llegaron
+        if ($request->has('niveles')) {
+            $niveles = collect($request->get('niveles', []))
+                ->map(fn($n) => (int)$n)->filter()->unique()->values();
+
+            $map = $proyecto->ciclos->pluck('id','nivel'); // nivel => id
+            if ($map->only($niveles)->count() !== $niveles->count()) {
+                return response()->json(['ok' => false, 'message' => 'Algún ciclo no pertenece al proyecto.'], 422);
+            }
+
+            $sesion->ciclos()->sync($map->only($niveles)->values()->all());
+        }
+
+        // Recalcular plan
+        $this->plan->recalcularYSincronizar($proyecto);
+
+        $sesion->loadMissing('ciclos');
+
+        return response()->json(['ok' => true, 'data' => new VmSesionResource($sesion)], 200);
     }
 
-
-    /** DELETE /api/vm/sesiones/{sesion}
-     *  Elimina una sesión (solo si el proyecto está PLANIFICADO y la sesión no inició/pasó).
+    /**
+     * DELETE /api/vm/sesiones/{sesion}
+     * @param VmSesion $sesion
+     * @return JsonResponse
      */
     public function destroySesion(VmSesion $sesion): JsonResponse
     {
         $user = request()->user();
 
+        /** @var VmProceso $proceso */
         $proceso  = VmProceso::findOrFail($sesion->sessionable_id);
         $proyecto = $proceso->proyecto()->firstOrFail();
 
-        if (!EpScopeService::userManagesEpSede($user->id, (int) $proyecto->ep_sede_id)) {
+        if (!EpScopeService::userManagesEpSede($user->id, (int)$proyecto->ep_sede_id)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para la EP_SEDE del proceso.'], 403);
         }
 
-        if (!$this->sesionEditable($sesion, (string) $proyecto->estado)) {
+        if (!$this->sesionEditable($sesion, (string)$proyecto->estado)) {
             return response()->json([
                 'ok'      => false,
                 'message' => 'No se puede eliminar: el proyecto no está en PLANIFICADO o la sesión ya inició/pasó.',
@@ -190,12 +283,18 @@ class ProcesoSesionController extends Controller
 
         $sesion->delete();
 
+        // Recalcular plan
+        $this->plan->recalcularYSincronizar($proyecto);
+
         return response()->json(null, 204);
     }
 
-    // ───────────────────────── Helper interno ─────────────────────────
-
-    /** Una sesión es editable si el proyecto está PLANIFICADO y la sesión no es pasada ni ya inició hoy. */
+    /**
+     * Helper interno: editable solo si proyecto PLANIFICADO y la sesión no pasó/ni inició.
+     * @param VmSesion $sesion
+     * @param string   $estadoProyecto
+     * @return bool
+     */
     protected function sesionEditable(VmSesion $sesion, string $estadoProyecto): bool
     {
         if ($estadoProyecto !== 'PLANIFICADO') {
@@ -205,12 +304,16 @@ class ProcesoSesionController extends Controller
         $today = now()->toDateString();
         $now   = now()->format('H:i:s');
 
-        $fecha = (string) $sesion->fecha;
-        $hi    = (string) $sesion->hora_inicio;
+        // fecha (cast date) → Y-m-d
+        $fechaStr = $sesion->fecha instanceof \Carbon\CarbonInterface
+            ? $sesion->fecha->toDateString()
+            : (string)$sesion->fecha;
 
-        // No editable si: fecha pasada, o es hoy y ya inició
-        if ($fecha < $today) return false;
-        if ($fecha === $today && $hi && $hi <= $now) return false;
+        // hora_inicio en BD puede estar como HH:MM:SS
+        $hi = (string)$sesion->hora_inicio;
+
+        if ($fechaStr < $today) return false;
+        if ($fechaStr === $today && $hi && $hi <= $now) return false;
 
         return true;
     }

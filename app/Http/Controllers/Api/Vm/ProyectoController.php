@@ -10,7 +10,9 @@ use App\Models\ExpedienteAcademico;
 use App\Models\PeriodoAcademico;
 use App\Models\VmParticipacion;
 use App\Models\VmProyecto;
+use App\Models\VmProyectoCiclo;
 use App\Services\Auth\EpScopeService;
+use App\Services\Vm\PlanificacionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,9 +20,12 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 
 class ProyectoController extends Controller
 {
+    public function __construct(private PlanificacionService $plan) {}
+
     /** GET /api/vm/proyectos (gestión) */
     public function index(Request $request): JsonResponse
     {
@@ -39,6 +44,7 @@ class ProyectoController extends Controller
 
         $query = VmProyecto::query()
             ->with(['imagenes' => fn ($q2) => $q2->latest()->limit(5)])
+            ->with('ciclos')
             ->withCount('imagenes as imagenes_total');
 
         // Limita por EP_SEDE gestionadas por el usuario
@@ -46,7 +52,6 @@ class ProyectoController extends Controller
         if (!empty($ids)) {
             $query->whereIn('ep_sede_id', $ids);
         } else {
-            // Sin permisos: no devuelve nada
             $query->whereRaw('1=0');
         }
 
@@ -56,7 +61,7 @@ class ProyectoController extends Controller
                 ->orWhere('codigo', 'like', "%{$q}%")
             );
         }
-        if (!is_null($nivel))   $query->where('nivel', $nivel);
+        if (!is_null($nivel))   $query->whereHas('ciclos', fn ($qq) => $qq->where('nivel', $nivel));
         if (!empty($estado))    $query->where('estado', $estado);
         if (!empty($perId))     $query->where('periodo_id', $perId);
         if (!empty($epId))      $query->where('ep_sede_id', $epId);
@@ -96,12 +101,11 @@ class ProyectoController extends Controller
     {
         $user = request()->user();
 
-        // 1) Debe pertenecer a la misma EP_SEDE del proyecto
         if (!EpScopeService::userBelongsToEpSede($user->id, (int) $proyecto->ep_sede_id)) {
             return response()->json(['ok'=>false,'message'=>'No perteneces a esta EP_SEDE.'], 403);
         }
 
-        // 2) Si está PLANIFICADO, solo staff o alumno inscrito lo ven
+        // Si está PLANIFICADO, solo staff o alumno inscrito lo ven
         $expIdForUser = ExpedienteAcademico::where('user_id', $user->id)
             ->where('ep_sede_id', $proyecto->ep_sede_id)
             ->value('id');
@@ -118,6 +122,7 @@ class ProyectoController extends Controller
 
         $proyecto->load([
             'imagenes',
+            'ciclos',
             'procesos' => fn($q) => $q->orderBy('orden')->orderBy('id'),
             'procesos.sesiones' => fn($q) => $q->orderBy('fecha')->orderBy('hora_inicio'),
         ]);
@@ -136,7 +141,7 @@ class ProyectoController extends Controller
     {
         $user = $request->user();
 
-        // 1) Expediente del alumno (tolerante a nombre de columna) + activos() si existe
+        // 1) Expediente del alumno
         $expQuery = ExpedienteAcademico::query()
             ->when(Schema::hasColumn('expedientes_academicos', 'user_id'), fn($q)=>$q->where('user_id', $user->id))
             ->when(Schema::hasColumn('expedientes_academicos', 'usuario_id'), fn($q)=>$q->where('usuario_id', $user->id))
@@ -179,12 +184,11 @@ class ProyectoController extends Controller
             ->join('periodos_academicos', 'periodos_academicos.id', '=', 'matriculas.periodo_id')
             ->where('matriculas.expediente_id', $exp->id)
             ->where(function($q){
-                // usa es_actual si existe; si no, cae a rango por fechas
                 if (Schema::hasColumn('periodos_academicos','es_actual')) {
                     $q->where('periodos_academicos.es_actual', true);
                 } else {
                     $q->whereDate('periodos_academicos.fecha_inicio','<=', now())
-                    ->whereDate('periodos_academicos.fecha_fin','>=', now());
+                      ->whereDate('periodos_academicos.fecha_fin','>=', now());
                 }
             })
             ->select('matriculas.ciclo')
@@ -192,26 +196,26 @@ class ProyectoController extends Controller
 
         $cicloActual = (int) (($matriculaActual->ciclo ?? $exp->ciclo) ?? 1);
 
-        // 4) Ya tiene VINCULADO (o PROYECTO compat) en su ciclo actual (en cualquier período)
+        // 4) ¿Ya tiene VINCULADO en su ciclo actual (cualquier período)?
         $tieneVinculadoEnCiclo = VmParticipacion::query()
             ->join('vm_proyectos as p', 'p.id', '=', 'vm_participaciones.participable_id')
+            ->join('vm_proyecto_ciclos as pc', 'pc.proyecto_id', '=', 'p.id')
             ->where('vm_participaciones.expediente_id', $exp->id)
             ->whereIn('vm_participaciones.estado', ['INSCRITO','CONFIRMADO','EN_CURSO','FINALIZADO'])
             ->where('p.ep_sede_id', $epSedeId)
             ->whereIn('p.tipo', ['VINCULADO','PROYECTO'])
-            ->where('p.nivel', $cicloActual)
+            ->where('pc.nivel', $cicloActual)
             ->exists();
 
-        // 5) Participaciones del alumno (filtradas por período seleccionado) → pendientes + actual
+        // 5) Participaciones del alumno (del período seleccionado) → pendientes + actual
         $parts = VmParticipacion::query()
             ->join('vm_proyectos as pr', 'pr.id', '=', 'vm_participaciones.participable_id')
             ->where('vm_participaciones.expediente_id', $exp->id)
             ->where('pr.ep_sede_id', $epSedeId)
-            ->where('pr.periodo_id', $periodo->id) // 👈 Solo del período seleccionado
+            ->where('pr.periodo_id', $periodo->id)
             ->select(
                 'vm_participaciones.*',
                 'pr.id as proyecto_id',
-                'pr.nivel as proyecto_nivel',
                 'pr.tipo as proyecto_tipo',
                 'pr.estado as proyecto_estado',
                 'pr.periodo_id as proyecto_periodo_id'
@@ -226,7 +230,6 @@ class ProyectoController extends Controller
             $tipo    = strtoupper((string) $p->proyecto_tipo);
             $estadoP = (string) $p->proyecto_estado;
 
-            // compat: PROYECTO => VINCULADO
             if ($tipo === 'PROYECTO') $tipo = 'VINCULADO';
             if ($tipo !== 'VINCULADO') continue;
 
@@ -234,11 +237,12 @@ class ProyectoController extends Controller
             if (!$proj) continue;
 
             $req = $this->minutosRequeridosProyecto($proj);
-            $acc = $this->minutosValidadosProyecto($projId, (int)$exp->id);
+            // 👇 Solo minutos del ciclo actual del alumno
+            $acc = $this->minutosValidadosProyectoPorCiclo($projId, (int)$exp->id, $cicloActual);
 
             if ($acc < $req) {
                 $pendientes[] = [
-                    'proyecto'       => (new VmProyectoResource($proj->loadMissing('imagenes')))->toArray($request),
+                    'proyecto'       => (new VmProyectoResource($proj->loadMissing('imagenes','ciclos')))->toArray($request),
                     'periodo'        => optional($proj->periodo)->codigo ?? $proj->periodo_id,
                     'requerido_min'  => $req,
                     'acumulado_min'  => $acc,
@@ -254,11 +258,12 @@ class ProyectoController extends Controller
 
         $tienePendienteVinculado = count($pendientes) > 0;
 
-        // 6) Bases para listas (👈 todas filtradas por período seleccionado)
+        // 6) Bases (todas del período seleccionado)
         $base = VmProyecto::query()
             ->where('ep_sede_id', $epSedeId)
             ->where('periodo_id', $periodo->id)
             ->with(['imagenes' => fn ($q) => $q->latest()->limit(5)])
+            ->with('ciclos')
             ->withCount('imagenes as imagenes_total');
 
         // a) VINCULADOS inscribibles SOLO si el período está vigente
@@ -267,19 +272,19 @@ class ProyectoController extends Controller
             $inscribibles = (clone $base)
                 ->whereIn('estado', ['PLANIFICADO','EN_CURSO'])
                 ->whereIn('tipo', ['VINCULADO','PROYECTO'])
-                ->where('nivel', $cicloActual)
+                ->whereHas('ciclos', fn ($q) => $q->where('nivel', $cicloActual))
                 ->whereDoesntHave('participaciones', fn($q) => $q->where('expediente_id', $exp->id))
                 ->orderByDesc('id')
                 ->get();
         }
 
-        // b) LIBRES del período seleccionado (cualquier estado; UI se encarga de mostrar activos en “Mi período” y cerrados en “Historial”)
+        // b) LIBRES
         $libres = (clone $base)
             ->where('tipo', 'LIBRE')
             ->orderByDesc('id')
             ->get();
 
-        // c) Vinculados históricos del período seleccionado (cualquier estado; la UI filtrará los cerrados para “Historial”)
+        // c) Vinculados históricos
         $vinculadosHistoricos = (clone $base)
             ->whereIn('tipo', ['VINCULADO','PROYECTO'])
             ->orderByDesc('id')
@@ -298,18 +303,16 @@ class ProyectoController extends Controller
                 'tiene_vinculado_en_ciclo' => $tieneVinculadoEnCiclo,
             ],
             'actual'                 => $actualProyecto
-                ? (new VmProyectoResource($actualProyecto->loadMissing('imagenes')))->toArray($request)
+                ? (new VmProyectoResource($actualProyecto->loadMissing('imagenes','ciclos')))->toArray($request)
                 : null,
             'pendientes'             => $pendientes,
-            'inscribibles'           => $toRes($inscribibles),       // vacío si el período no está vigente
-            'libres'                 => $toRes($libres),             // todos (UI decide activos/historial)
-            'vinculados_historicos'  => $toRes($vinculadosHistoricos), // todos (UI decide activos/historial)
+            'inscribibles'           => $toRes($inscribibles),
+            'libres'                 => $toRes($libres),
+            'vinculados_historicos'  => $toRes($vinculadosHistoricos),
         ];
 
         return response()->json(['ok'=>true, 'data'=>$resp], 200);
     }
-
-
 
     /** POST /api/vm/proyectos */
     public function store(ProyectoStoreRequest $request): JsonResponse
@@ -327,21 +330,37 @@ class ProyectoController extends Controller
 
         $tipo = strtoupper($data['tipo']);
 
-        $proyecto = VmProyecto::create([
-            'ep_sede_id'                 => $data['ep_sede_id'],
-            'periodo_id'                 => $data['periodo_id'],
-            'codigo'                     => $codigo,
-            'titulo'                     => $data['titulo'],
-            'descripcion'                => $data['descripcion'] ?? null,
-            'tipo'                       => $tipo,
-            'modalidad'                  => $data['modalidad'],
-            'estado'                     => 'PLANIFICADO',
-            'nivel'                      => in_array($tipo, ['VINCULADO','PROYECTO'], true) ? $data['nivel'] : null,
-            'horas_planificadas'         => $data['horas_planificadas'],
-            'horas_minimas_participante' => $data['horas_minimas_participante'] ?? null,
-        ]);
+        $proyecto = DB::transaction(function () use ($data, $codigo, $tipo) {
+            $p = VmProyecto::create([
+                'ep_sede_id'                 => $data['ep_sede_id'],
+                'periodo_id'                 => $data['periodo_id'],
+                'codigo'                     => $codigo,
+                'titulo'                     => $data['titulo'],
+                'descripcion'                => $data['descripcion'] ?? null,
+                'tipo'                       => $tipo,
+                'modalidad'                  => $data['modalidad'],
+                'estado'                     => 'PLANIFICADO',
+                'horas_planificadas'         => $data['horas_planificadas'],
+                'horas_minimas_participante' => $data['horas_minimas_participante'] ?? null,
+            ]);
 
-        return response()->json(['ok'=>true,'data'=>new VmProyectoResource($proyecto)], 201);
+            if (in_array($tipo, ['VINCULADO','PROYECTO'], true)) {
+                $niveles = collect($data['niveles'] ?? [])->unique()->values();
+                $rows = $niveles->map(fn($n) => [
+                    'proyecto_id' => $p->id,
+                    'ep_sede_id'  => $p->ep_sede_id,
+                    'periodo_id'  => $p->periodo_id,
+                    'nivel'       => (int)$n,
+                    'created_at'  => now(),
+                    'updated_at'  => now(),
+                ])->all();
+                if ($rows) DB::table('vm_proyecto_ciclos')->insert($rows);
+            }
+
+            return $p;
+        });
+
+        return response()->json(['ok'=>true,'data'=>new VmProyectoResource($proyecto->loadMissing('ciclos'))], 201);
     }
 
     /** PUT /api/vm/proyectos/{proyecto}/publicar */
@@ -367,16 +386,35 @@ class ProyectoController extends Controller
             ], 422);
         }
 
+        // En VINCULADO/PROYECTO se exige al menos 1 ciclo
+        if (in_array($proyecto->tipo, ['VINCULADO','PROYECTO'], true) && $proyecto->ciclos()->count() < 1) {
+            return response()->json([
+                'ok'=>false,
+                'message'=>'Debe definir al menos 1 ciclo (nivel) antes de publicar el proyecto.',
+            ], 422);
+        }
+
+        // 🔐 Validar cuadres antes de publicar
+        try {
+            $this->plan->assertCuadres($proyecto);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'ok'      => false,
+                'message' => 'No se puede publicar: la planificación no cuadra.',
+                'errors'  => $e->errors(),
+            ], 422);
+        }
+
         $proyecto->update(['estado' => 'EN_CURSO']);
 
-        return response()->json(['ok'=>true, 'data'=>$proyecto->fresh()], 200);
+        return response()->json(['ok'=>true, 'data'=>$proyecto->fresh()->loadMissing('ciclos')], 200);
     }
 
     /** GET /api/vm/proyectos/niveles-disponibles */
     public function nivelesDisponibles(Request $request): JsonResponse
     {
         $v = Validator::make($request->all(), [
-            'ep_sede_id' => ['required','integer','exists:ep_sede,id'], // ajusta a ep_sedes si tu tabla es plural
+            'ep_sede_id' => ['required','integer','exists:ep_sede,id'],
             'periodo_id' => ['required','integer','exists:periodos_academicos,id'],
             'exclude_proyecto_id' => ['nullable','integer','exists:vm_proyectos,id'],
         ]);
@@ -393,13 +431,11 @@ class ProyectoController extends Controller
             return response()->json(['ok'=>false, 'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
 
-        $ocupados = VmProyecto::query()
+        $ocupados = DB::table('vm_proyecto_ciclos')
             ->where('ep_sede_id', $ep)
             ->where('periodo_id', $per)
-            ->whereIn('tipo', ['VINCULADO','PROYECTO']) // solo niveles reales
-            ->when($exclude, fn($q) => $q->where('id', '!=', $exclude))
+            ->when($exclude, fn($q) => $q->where('proyecto_id', '!=', $exclude))
             ->pluck('nivel')
-            ->filter(fn ($n) => !is_null($n))
             ->map(fn ($n) => (int) $n)
             ->all();
 
@@ -410,8 +446,6 @@ class ProyectoController extends Controller
         return response()->json(['ok'=>true, 'data'=>$disponibles], 200);
     }
 
-    // ───────────────────────── Edición y eliminación ─────────────────────────
-
     /** GET /api/vm/proyectos/{proyecto}/edit */
     public function edit(VmProyecto $proyecto): JsonResponse
     {
@@ -420,7 +454,7 @@ class ProyectoController extends Controller
             return response()->json(['ok'=>false,'message'=>'No autorizado para esta EP_SEDE.'], 403);
         }
 
-        $proyecto->load(['procesos.sesiones']);
+        $proyecto->load(['procesos.sesiones','ciclos']);
 
         return response()->json([
             'ok'   => true,
@@ -449,26 +483,56 @@ class ProyectoController extends Controller
         $data = $request->validate([
             'titulo'                     => ['sometimes','string','max:255'],
             'descripcion'                => ['sometimes','nullable','string'],
-            'tipo'                       => ['sometimes','in:VINCULADO,LIBRE'],
+            'tipo'                       => ['sometimes','in:VINCULADO,LIBRE,PROYECTO'],
             'modalidad'                  => ['sometimes','in:PRESENCIAL,VIRTUAL,MIXTA'],
             'horas_planificadas'         => ['sometimes','integer','min:1','max:32767'],
             'horas_minimas_participante' => ['sometimes','nullable','integer','min:0','max:32767'],
-            'nivel'                      => [
-                'sometimes',
-                'integer',
-                'between:1,10',
-                Rule::unique('vm_proyectos', 'nivel')
-                    ->where(fn ($q) => $q
-                        ->where('ep_sede_id', $proyecto->ep_sede_id)
-                        ->where('periodo_id', $proyecto->periodo_id)
-                    )
-                    ->ignore($proyecto->id),
-            ],
+
+            // multiciclo
+            'niveles'   => ['sometimes','array'],
+            'niveles.*' => ['integer','between:1,10','distinct'],
         ]);
 
-        $proyecto->update($data);
+        DB::transaction(function () use ($proyecto, $data) {
+            $proyecto->update(collect($data)->except(['niveles'])->all());
 
-        return response()->json(['ok'=>true,'data'=>new VmProyectoResource($proyecto->fresh())], 200);
+            if (array_key_exists('niveles', $data)) {
+                $niveles = collect($data['niveles'])->unique()->values();
+
+                // validar disponibilidad global (sede+periodo+nivel)
+                foreach ($niveles as $n) {
+                    $exists = DB::table('vm_proyecto_ciclos')
+                        ->where('ep_sede_id', $proyecto->ep_sede_id)
+                        ->where('periodo_id', $proyecto->periodo_id)
+                        ->where('nivel', $n)
+                        ->where('proyecto_id', '!=', $proyecto->id)
+                        ->exists();
+                    if ($exists) {
+                        abort(422, "El nivel {$n} ya está ocupado en este período/sede.");
+                    }
+                }
+
+                // sync
+                $existentes = $proyecto->ciclos()->pluck('nivel','id'); // id => nivel
+                $porCrear   = $niveles->diff($existentes->values());
+                $porBorrar  = $existentes->filter(fn($n) => !$niveles->contains($n))->keys();
+
+                if ($porBorrar->isNotEmpty()) {
+                    VmProyectoCiclo::whereIn('id', $porBorrar)->delete(); // cascada borra vm_sesion_ciclos
+                }
+
+                foreach ($porCrear as $n) {
+                    VmProyectoCiclo::create([
+                        'proyecto_id' => $proyecto->id,
+                        'ep_sede_id'  => $proyecto->ep_sede_id,
+                        'periodo_id'  => $proyecto->periodo_id,
+                        'nivel'       => (int) $n,
+                    ]);
+                }
+            }
+        });
+
+        return response()->json(['ok'=>true,'data'=>new VmProyectoResource($proyecto->fresh()->loadMissing('ciclos'))], 200);
     }
 
     /** DELETE /api/vm/proyectos/{proyecto} */
@@ -516,7 +580,7 @@ class ProyectoController extends Controller
         return !$yaInicio;
     }
 
-    // ───────────────────────── helpers existentes ─────────────────────────
+    // ───────────────────────── helpers ─────────────────────────
 
     protected function minutosRequeridosProyecto(VmProyecto $proyecto): int
     {
@@ -524,20 +588,18 @@ class ProyectoController extends Controller
         return ((int)$h) * 60;
     }
 
-    /**
-     * Suma minutos validados de asistencias en sesiones de PROCESOS del proyecto.
-     * JOINs directos → no depende de relaciones ni morphMap.
-     */
-    protected function minutosValidadosProyecto(int $proyectoId, int $expedienteId): int
+    /** Minutos validados solo de sesiones del ciclo indicado. */
+    protected function minutosValidadosProyectoPorCiclo(int $proyectoId, int $expedienteId, int $nivel): int
     {
-        $total = DB::table('vm_asistencias as a')
+        return (int) DB::table('vm_asistencias as a')
             ->join('vm_sesiones as s', 's.id', '=', 'a.sesion_id')
-            ->join('vm_procesos as p', 'p.id', '=', 's.sessionable_id')
+            ->join('vm_procesos as pr', 'pr.id', '=', 's.sessionable_id')
+            ->join('vm_sesion_ciclos as sc', 'sc.sesion_id', '=', 's.id')
+            ->join('vm_proyecto_ciclos as pc', 'pc.id', '=', 'sc.proyecto_ciclo_id')
             ->where('a.estado', 'VALIDADO')
             ->where('a.expediente_id', $expedienteId)
-            ->where('p.proyecto_id', $proyectoId)
+            ->where('pr.proyecto_id', $proyectoId)
+            ->where('pc.nivel', $nivel)
             ->sum('a.minutos_validados');
-
-        return (int) $total;
     }
 }

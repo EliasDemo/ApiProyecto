@@ -20,7 +20,7 @@ class AgendaController extends Controller
 
         $periodoId = $request->integer('periodo_id');
 
-        // 1) Detectar expediente activo del alumno
+        // 1) Expediente activo del alumno
         $exp = DB::table('expedientes_academicos')
             ->where('user_id', $user->id)
             ->where('estado', 'ACTIVO')
@@ -35,7 +35,7 @@ class AgendaController extends Controller
             $periodoId = (int) (DB::table('periodos_academicos')->where('es_actual', 1)->value('id') ?? 0);
         }
 
-        // 3) Proyectos donde está inscrito el alumno (participable = VmProyecto)
+        // 3) Proyectos donde está inscrito
         $participaciones = DB::table('vm_participaciones')
             ->select('participable_id')
             ->where('participable_type', \App\Models\VmProyecto::class)
@@ -55,10 +55,17 @@ class AgendaController extends Controller
         }
         $proyectos = $proyectosQ->get();
 
-        $ahora = Carbon::now();
         $respuesta = [];
 
         foreach ($proyectos as $proy) {
+            // Niveles del proyecto (multiciclo)
+            $niveles = DB::table('vm_proyecto_ciclos')
+                ->where('proyecto_id', $proy->id)
+                ->pluck('nivel')
+                ->map(fn($n)=>(int)$n)
+                ->values()
+                ->all();
+
             // Procesos del proyecto
             $procesos = DB::table('vm_procesos')
                 ->where('proyecto_id', $proy->id)
@@ -165,7 +172,7 @@ class AgendaController extends Controller
                     'tipo'  => $proy->tipo,
                     'modalidad' => $proy->modalidad,
                     'estado'=> $proy->estado,
-                    'nivel' => $proy->nivel,
+                    'niveles' => $niveles, // 👈 multiciclo
                     'ep_sede_id' => (int)$proy->ep_sede_id,
                     'periodo_id' => (int)$proy->periodo_id,
                     'horas_planificadas' => (int)$proy->horas_planificadas,
@@ -186,7 +193,6 @@ class AgendaController extends Controller
         if (!$user) {
             return response()->json(['ok' => false, 'message' => 'No autenticado.'], 401);
         }
-        // 🔐 Solo si necesita permiso → aquí SÍ: agenda de STAFF (gestión por EP-Sede)
         if (!$user->can('ep.manage.ep_sede')) {
             return response()->json(['ok' => false, 'message' => 'NO_AUTORIZADO'], 403);
         }
@@ -194,11 +200,10 @@ class AgendaController extends Controller
         $nivel = $request->integer('nivel') ?: null;
         $periodoId = $request->integer('periodo_id');
 
-        // EP_SEDE donde el usuario tiene expediente activo como STAFF (dato de negocio, no auth)
         $epSedes = DB::table('expedientes_academicos')
             ->where('user_id', $user->id)
             ->where('estado', 'ACTIVO')
-            ->whereIn('rol', ['COORDINADOR','ENCARGADO']) // clasificador de staff (no para autorización)
+            ->whereIn('rol', ['COORDINADOR','ENCARGADO'])
             ->pluck('ep_sede_id')
             ->all();
 
@@ -210,7 +215,6 @@ class AgendaController extends Controller
             $periodoId = (int) (DB::table('periodos_academicos')->where('es_actual', 1)->value('id') ?? 0);
         }
 
-        // Sesiones de procesos cuyos proyectos pertenecen a mis EP_SEDE
         $sesionesQ = DB::table('vm_sesiones as s')
             ->join('vm_procesos as p', function ($j) {
                 $j->on('p.id', '=', 's.sessionable_id')
@@ -220,9 +224,13 @@ class AgendaController extends Controller
             ->whereIn('pr.ep_sede_id', $epSedes);
 
         if ($periodoId) $sesionesQ->where('pr.periodo_id', $periodoId);
-        if ($nivel !== null) $sesionesQ->where('pr.nivel', $nivel);
 
-        // Opcional: solo hoy en adelante
+        // Filtro por nivel (multiciclo) a nivel de proyecto
+        if ($nivel !== null) {
+            $sesionesQ->join('vm_proyecto_ciclos as pc', 'pc.proyecto_id', '=', 'pr.id')
+                      ->where('pc.nivel', $nivel);
+        }
+
         $sesionesQ->whereDate('s.fecha', '>=', Carbon::today()->toDateString());
 
         $sesiones = $sesionesQ
@@ -231,6 +239,7 @@ class AgendaController extends Controller
                 'p.id as proceso_id', 'p.nombre as proceso_nombre', 'p.tipo_registro',
                 'pr.id as proyecto_id', 'pr.titulo as proyecto_titulo', 'pr.codigo as proyecto_codigo'
             )
+            ->distinct()
             ->orderBy('s.fecha')->orderBy('s.hora_inicio')
             ->get();
 
@@ -249,7 +258,15 @@ class AgendaController extends Controller
                 ->where('sesion_id', $row->id)
                 ->count();
 
-            // QR activo (si lo hay)
+            // niveles del proyecto
+            $niveles = DB::table('vm_proyecto_ciclos')
+                ->where('proyecto_id', $row->proyecto_id)
+                ->pluck('nivel')
+                ->map(fn($n)=>(int)$n)
+                ->values()
+                ->all();
+
+            // QR activo
             $now = Carbon::now();
             $vqr = DB::table('vm_qr_tokens')
                 ->where('sesion_id', $row->id)
@@ -275,6 +292,7 @@ class AgendaController extends Controller
                     'id' => (int)$row->proyecto_id,
                     'codigo' => $row->proyecto_codigo,
                     'titulo' => $row->proyecto_titulo,
+                    'niveles' => $niveles, // 👈 multiciclo
                 ],
                 'proceso' => [
                     'id' => (int)$row->proceso_id,

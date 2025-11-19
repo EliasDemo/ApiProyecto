@@ -121,4 +121,23 @@ class EpScopeService
             ->where($col, $user->id)
             ->exists();
     }
+
+    /** 🆕 EP-SEDE activa del usuario (la que usaremos para los eventos) */
+    public static function epSedeIdForUser(int $userId): ?int
+    {
+        $user = self::user($userId);
+        if (!$user) {
+            return null;
+        }
+
+        $col = self::userIdColumn();
+
+        $exp = ExpedienteAcademico::query()
+            ->where($col, $user->id)
+            ->where('estado', 'ACTIVO')
+            ->latest('id')
+            ->first();
+
+        return $exp?->ep_sede_id;
+    }
 }

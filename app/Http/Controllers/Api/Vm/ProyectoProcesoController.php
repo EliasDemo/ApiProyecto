@@ -12,14 +12,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
-/**
- * ProyectoProcesoController
- * CRUD de procesos dentro de un proyecto.
- * 🔐 Permiso: el usuario debe gestionar la EP_SEDE del proyecto/proceso.
- */
 class ProyectoProcesoController extends Controller
 {
-    /** POST /api/vm/proyectos/{proyecto}/procesos */
     public function store(VmProyecto $proyecto, ProcesoStoreRequest $request): JsonResponse
     {
         $user = $request->user();
@@ -40,7 +34,6 @@ class ProyectoProcesoController extends Controller
         return response()->json(['ok'=>true, 'data'=>new VmProcesoResource($proc)], 201);
     }
 
-    /** PUT /api/vm/procesos/{proceso} */
     public function update(VmProceso $proceso, Request $request): JsonResponse
     {
         $user = $request->user();
@@ -50,7 +43,6 @@ class ProyectoProcesoController extends Controller
             return response()->json(['ok'=>false,'message'=>'No autorizado para la EP_SEDE del proceso.'], 403);
         }
 
-        // Solo permitir editar si el proyecto está PLANIFICADO (coherente con reglas del resto)
         if (!$this->proyectoEditable($proyecto->id)) {
             return response()->json([
                 'ok'=>false,
@@ -69,7 +61,6 @@ class ProyectoProcesoController extends Controller
         return response()->json(['ok'=>true, 'data'=>new VmProcesoResource($proceso->fresh())], 200);
     }
 
-    /** DELETE /api/vm/procesos/{proceso} */
     public function destroy(VmProceso $proceso): JsonResponse
     {
         $user = request()->user();
@@ -91,9 +82,6 @@ class ProyectoProcesoController extends Controller
         return response()->json(null, 204);
     }
 
-    // ─────────── Helpers ───────────
-
-    /** Proyecto editable si: estado PLANIFICADO y ninguna sesión está en el pasado o ya inició hoy. */
     protected function proyectoEditable(int $proyectoId): bool
     {
         $proj = VmProyecto::with(['procesos.sesiones'])->find($proyectoId);
@@ -104,7 +92,6 @@ class ProyectoProcesoController extends Controller
 
         $yaInicio = $proj->procesos->contains(function ($p) use ($today, $now) {
             return $p->sesiones->contains(function ($s) use ($today, $now) {
-                // si $s->fecha es cast date, toDateString(); si es string, el casteo funciona igual
                 $f = method_exists($s->fecha, 'toDateString') ? $s->fecha->toDateString() : (string)$s->fecha;
                 return ($f < $today) || ($f === $today && $s->hora_inicio && $s->hora_inicio <= $now);
             });
@@ -113,7 +100,6 @@ class ProyectoProcesoController extends Controller
         return !$yaInicio;
     }
 
-    /** Proceso eliminable si: proyecto PLANIFICADO y sus sesiones no son pasadas ni han iniciado hoy. */
     protected function procesoEliminable(VmProceso $proceso): bool
     {
         $proyecto = $proceso->proyecto()->first();

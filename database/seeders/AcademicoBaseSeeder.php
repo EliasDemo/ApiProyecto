@@ -14,63 +14,206 @@ class AcademicoBaseSeeder extends Seeder
 {
     public function run(): void
     {
+        // ===== UNIVERSIDAD ÚNICA =====
         $uni = Universidad::where('codigo', 'UPeU')->firstOrFail();
 
-        // ===== SEDES =====
+        // ===== SEDES / CAMPUS REALES =====
+        // Campus Lima (principal), Juliaca, Tarapoto
         $sedeLima = Sede::firstOrCreate(
-            ['universidad_id' => $uni->id, 'nombre' => 'Sede Lima'],
+            ['universidad_id' => $uni->id, 'nombre' => 'Campus Lima'],
             ['es_principal' => true, 'esta_suspendida' => false]
         );
 
         $sedeJuliaca = Sede::firstOrCreate(
-            ['universidad_id' => $uni->id, 'nombre' => 'Sede Juliaca'],
+            ['universidad_id' => $uni->id, 'nombre' => 'Campus Juliaca'],
             ['es_principal' => false, 'esta_suspendida' => false]
         );
 
-        // ===== FACULTADES =====
-        $facIng = Facultad::firstOrCreate(
+        $sedeTarapoto = Sede::firstOrCreate(
+            ['universidad_id' => $uni->id, 'nombre' => 'Campus Tarapoto'],
+            ['es_principal' => false, 'esta_suspendida' => false]
+        );
+
+        $sedes = [
+            'LIMA'     => $sedeLima,
+            'JULIACA'  => $sedeJuliaca,
+            'TARAPOTO' => $sedeTarapoto,
+        ];
+
+        // ===== FACULTADES REALES =====
+        // Códigos sugeridos según uso común: FCE, FHE, FIA, FCS, FTEO
+        $facultades = [];
+
+        $facultades['FCE'] = Facultad::firstOrCreate(
+            ['universidad_id' => $uni->id, 'codigo' => 'FCE'],
+            ['nombre' => 'Facultad de Ciencias Empresariales']
+        );
+
+        $facultades['FHE'] = Facultad::firstOrCreate(
+            ['universidad_id' => $uni->id, 'codigo' => 'FHE'],
+            ['nombre' => 'Facultad de Ciencias Humanas y Educación']
+        );
+
+        $facultades['FIA'] = Facultad::firstOrCreate(
             ['universidad_id' => $uni->id, 'codigo' => 'FIA'],
             ['nombre' => 'Facultad de Ingeniería y Arquitectura']
         );
 
-        $facSalud = Facultad::firstOrCreate(
+        $facultades['FCS'] = Facultad::firstOrCreate(
             ['universidad_id' => $uni->id, 'codigo' => 'FCS'],
             ['nombre' => 'Facultad de Ciencias de la Salud']
         );
 
-        // ===== ESCUELAS =====
-        $escSistemas = EscuelaProfesional::firstOrCreate(
-            ['facultad_id' => $facIng->id, 'codigo' => 'SIS'],
-            ['nombre' => 'Ingeniería de Sistemas']
+        $facultades['FTEO'] = Facultad::firstOrCreate(
+            ['universidad_id' => $uni->id, 'codigo' => 'FTEO'],
+            ['nombre' => 'Facultad de Teología']
         );
 
-        $escArquitectura = EscuelaProfesional::firstOrCreate(
-            ['facultad_id' => $facIng->id, 'codigo' => 'ARQ'],
-            ['nombre' => 'Arquitectura']
-        );
+        // ===== ESCUELAS / CARRERAS REALES (subset razonable) =====
+        // Estructura: por facultad => [ [codigo, nombre, sedes[]], ... ]
+        $escuelasPorFacultad = [
 
-        $escEnfermeria = EscuelaProfesional::firstOrCreate(
-            ['facultad_id' => $facSalud->id, 'codigo' => 'ENF'],
-            ['nombre' => 'Enfermería']
-        );
+            // --- Ciencias Empresariales ---
+            'FCE' => [
+                [
+                    'codigo' => 'ADM',
+                    'nombre' => 'Administración',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'CGT',
+                    'nombre' => 'Contabilidad, Gestión Tributaria y Aduanera',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'MKT',
+                    'nombre' => 'Marketing y Negocios Internacionales',
+                    'sedes'  => ['LIMA', 'TARAPOTO'],
+                ],
+            ],
 
-        // ===== EP_SEDE (vincular Escuela ↔ Sede) =====
-        $epSede_SIS_Lima = EpSede::firstOrCreate([
-            'escuela_profesional_id' => $escSistemas->id,
-            'sede_id'                => $sedeLima->id,
-        ]);
+            // --- Ciencias Humanas y Educación ---
+            'FHE' => [
+                [
+                    'codigo' => 'CCOM',
+                    'nombre' => 'Ciencias de la Comunicación',
+                    'sedes'  => ['LIMA'],
+                ],
+                [
+                    'codigo' => 'CAUD',
+                    'nombre' => 'Comunicación Audiovisual y Medios Interactivos',
+                    'sedes'  => ['LIMA'],
+                ],
+                [
+                    'codigo' => 'EDIN',
+                    'nombre' => 'Educación Inicial y Puericultura',
+                    'sedes'  => ['LIMA', 'JULIACA'],
+                ],
+                [
+                    'codigo' => 'EDPR',
+                    'nombre' => 'Educación Primaria y Pedagogía Terapéutica',
+                    'sedes'  => ['LIMA', 'JULIACA'],
+                ],
+                [
+                    'codigo' => 'EDLI',
+                    'nombre' => 'Educación, Especialidad Inglés y Español',
+                    'sedes'  => ['LIMA', 'JULIACA'],
+                ],
+            ],
 
-        $epSede_ARQ_Lima = EpSede::firstOrCreate([
-            'escuela_profesional_id' => $escArquitectura->id,
-            'sede_id'                => $sedeLima->id,
-        ]);
+            // --- Ingeniería y Arquitectura ---
+            'FIA' => [
+                [
+                    'codigo' => 'ARQ',
+                    'nombre' => 'Arquitectura y Urbanismo',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'AMB',
+                    'nombre' => 'Ingeniería Ambiental',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'ALIM',
+                    'nombre' => 'Ingeniería de Industrias Alimentarias',
+                    'sedes'  => ['LIMA', 'JULIACA'],
+                ],
+                [
+                    'codigo' => 'CIV',
+                    'nombre' => 'Ingeniería Civil',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'SIS',
+                    'nombre' => 'Ingeniería de Sistemas',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+            ],
 
-        $epSede_ENF_Juliaca = EpSede::firstOrCreate([
-            'escuela_profesional_id' => $escEnfermeria->id,
-            'sede_id'                => $sedeJuliaca->id,
-        ]);
+            // --- Ciencias de la Salud ---
+            'FCS' => [
+                [
+                    'codigo' => 'ENF',
+                    'nombre' => 'Enfermería',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'NUT',
+                    'nombre' => 'Nutrición Humana',
+                    'sedes'  => ['LIMA', 'JULIACA'],
+                ],
+                [
+                    'codigo' => 'PSI',
+                    'nombre' => 'Psicología',
+                    'sedes'  => ['LIMA', 'JULIACA', 'TARAPOTO'],
+                ],
+                [
+                    'codigo' => 'MED',
+                    'nombre' => 'Medicina Humana',
+                    'sedes'  => ['LIMA'],
+                ],
+            ],
 
-        // ===== PERÍODOS ACADÉMICOS (2 antes, actual, 2 después) =====
+            // --- Teología ---
+            'FTEO' => [
+                [
+                    'codigo' => 'TEO',
+                    'nombre' => 'Teología',
+                    'sedes'  => ['LIMA'],
+                ],
+            ],
+        ];
+
+        // ===== CREAR ESCUELAS Y EP_SEDE =====
+        foreach ($escuelasPorFacultad as $codFac => $escuelas) {
+            $facultad = $facultades[$codFac];
+
+            foreach ($escuelas as $escData) {
+                $escuela = EscuelaProfesional::firstOrCreate(
+                    [
+                        'facultad_id' => $facultad->id,
+                        'codigo'      => $escData['codigo'],
+                    ],
+                    [
+                        'nombre' => $escData['nombre'],
+                    ]
+                );
+
+                // Vincular cada escuela con las sedes donde se dicta (EpSede)
+                foreach ($escData['sedes'] as $sedeKey) {
+                    if (!isset($sedes[$sedeKey])) {
+                        continue;
+                    }
+
+                    EpSede::firstOrCreate([
+                        'escuela_profesional_id' => $escuela->id,
+                        'sede_id'                => $sedes[$sedeKey]->id,
+                    ]);
+                }
+            }
+        }
+
+        // ===== PERÍODOS ACADÉMICOS (igual que tu versión) =====
         $periodos = [
             // 2 anteriores
             [

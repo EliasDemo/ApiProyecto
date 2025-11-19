@@ -21,13 +21,12 @@ class VmProyecto extends Model
         'tipo',
         'modalidad',
         'estado',
-        'nivel', // 👈 nuevo (1..10)
+        // 👇 SIN 'nivel' (multiciclo va en vm_proyecto_ciclos)
         'horas_planificadas',
         'horas_minimas_participante',
     ];
 
     protected $casts = [
-        'nivel'                      => 'integer',
         'horas_planificadas'         => 'integer',
         'horas_minimas_participante' => 'integer',
     ];
@@ -36,46 +35,45 @@ class VmProyecto extends Model
      | Relaciones
      |=====================*/
 
-    /** @return \Illuminate\Database\Eloquent\Relations\BelongsTo */
     public function epSede()
     {
         return $this->belongsTo(EpSede::class, 'ep_sede_id');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Relations\BelongsTo */
     public function periodo()
     {
         return $this->belongsTo(PeriodoAcademico::class, 'periodo_id');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Relations\HasMany */
     public function procesos()
     {
         return $this->hasMany(VmProceso::class, 'proyecto_id');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Relations\MorphMany */
     public function participaciones()
     {
         return $this->morphMany(VmParticipacion::class, 'participable');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Relations\MorphMany */
     public function certificados()
     {
         return $this->morphMany(Certificado::class, 'certificable');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Relations\MorphMany */
     public function imagenes()
     {
         return $this->morphMany(Imagen::class, 'imageable');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Relations\MorphMany */
     public function registrosHoras()
     {
         return $this->morphMany(RegistroHora::class, 'vinculable');
+    }
+
+    /** Multiciclo */
+    public function ciclos()
+    {
+        return $this->hasMany(VmProyectoCiclo::class, 'proyecto_id')->orderBy('nivel');
     }
 
     /* =====================
@@ -86,10 +84,10 @@ class VmProyecto extends Model
     {
         static::deleting(function (self $proyecto) {
             // Si tu FK vm_procesos.proyecto_id tiene onDelete('cascade'),
-            // puedes quitar este bloque y dejar al motor borrar en cascada.
+            // puedes quitar este bloque.
             $proyecto->loadMissing('procesos');
             foreach ($proyecto->procesos as $proceso) {
-                $proceso->delete(); // permitirá disparar eventos en los hijos
+                $proceso->delete();
             }
         });
     }
@@ -98,34 +96,52 @@ class VmProyecto extends Model
      | Scopes útiles
      |=====================*/
 
-    /** @return \Illuminate\Database\Eloquent\Builder */
     public function scopeEnCurso($q)
     {
         return $q->where('estado', 'EN_CURSO');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Builder */
     public function scopePlanificados($q)
     {
         return $q->where('estado', 'PLANIFICADO');
     }
 
-    /** @return \Illuminate\Database\Eloquent\Builder */
     public function scopeDelPeriodo($q, int $periodoId)
     {
         return $q->where('periodo_id', $periodoId);
     }
 
-    /** @return \Illuminate\Database\Eloquent\Builder */
     public function scopeDeEpSede($q, int $epSedeId)
     {
         return $q->where('ep_sede_id', $epSedeId);
     }
 
-    /** @return \Illuminate\Database\Eloquent\Builder */
+    /**
+     * Compat del antiguo scopeDelNivel(n):
+     * ahora filtra por relación ciclos (no columna).
+     */
     public function scopeDelNivel($q, int $nivel)
     {
-        return $q->where('nivel', $nivel);
+        return $q->whereHas('ciclos', fn($qq) => $qq->where('nivel', $nivel));
+    }
+
+    /** Alias explícito */
+    public function scopeConNivel($q, int $nivel)
+    {
+        return $q->whereHas('ciclos', fn($qq) => $qq->where('nivel', $nivel));
+    }
+
+    /* =====================
+     | Accessors útiles
+     |=====================*/
+
+    /** Devuelve [1,2,3...] con los niveles del proyecto */
+    public function getNivelesAttribute(): array
+    {
+        if (!$this->relationLoaded('ciclos')) {
+            $this->load('ciclos');
+        }
+        return $this->ciclos->pluck('nivel')->values()->all();
     }
 
     /* =====================
@@ -133,10 +149,9 @@ class VmProyecto extends Model
      |=====================*/
 
     /**
-     * Indica si el proyecto puede ser editado/eliminado.
-     * Reglas:
+     * editable/eliminable si:
      *  - estado === PLANIFICADO
-     *  - no existe ninguna sesión pasada o ya iniciada hoy (hora_inicio <= ahora).
+     *  - no hay sesiones pasadas o ya iniciadas hoy
      */
     public function isEditable(): bool
     {

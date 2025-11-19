@@ -13,37 +13,40 @@ class ProyectoStoreRequest extends FormRequest
     }
 
     /**
-     * Normaliza `tipo` a mayúsculas antes de validar.
+     * Normaliza `tipo` y `niveles` antes de validar.
      */
     protected function prepareForValidation(): void
     {
-        if ($this->has('tipo')) {
-            $this->merge([
-                'tipo' => strtoupper((string) $this->input('tipo')),
-            ]);
+        $tipo = $this->has('tipo') ? strtoupper((string) $this->input('tipo')) : null;
+
+        // Normaliza niveles a enteros únicos y ordenados
+        $niveles = $this->has('niveles')
+            ? collect((array) $this->input('niveles'))
+                ->filter(fn ($v) => $v !== null && $v !== '')
+                ->map(fn ($v) => (int) $v)
+                ->unique()
+                ->sort()
+                ->values()
+                ->all()
+            : null;
+
+        $merge = [];
+        if (!is_null($tipo)) {
+            $merge['tipo'] = $tipo;
+        }
+        if (!is_null($niveles)) {
+            $merge['niveles'] = $niveles;
+        }
+
+        if ($merge) {
+            $this->merge($merge);
         }
     }
 
     public function rules(): array
     {
-        $tipo = (string) $this->input('tipo');
-
-        // Reglas para `nivel` según `tipo`
-        $nivelRules = ['bail'];
-        if (in_array($tipo, ['VINCULADO', 'PROYECTO'], true)) {
-            // Requerido y único por (ep_sede_id, periodo_id)
-            $nivelRules[] = 'required';
-            $nivelRules[] = 'integer';
-            $nivelRules[] = 'between:1,10';
-            $nivelRules[] = Rule::unique('vm_proyectos', 'nivel')
-                ->where(fn ($q) => $q
-                    ->where('ep_sede_id', $this->input('ep_sede_id'))
-                    ->where('periodo_id', $this->input('periodo_id'))
-                );
-        } else {
-            // LIBRE: no debe venir `nivel`
-            $nivelRules[] = 'prohibited';
-        }
+        $ep  = $this->input('ep_sede_id');
+        $per = $this->input('periodo_id');
 
         return [
             'ep_sede_id'  => ['required','integer','exists:ep_sede,id'],
@@ -54,11 +57,26 @@ class ProyectoStoreRequest extends FormRequest
 
             'titulo'      => ['required','string','max:255'],
             'descripcion' => ['nullable','string'],
-            'tipo'        => ['required', Rule::in(['VINCULADO','LIBRE'])],
+
+            // Acepta PROYECTO por compat (se trata como VINCULADO)
+            'tipo'        => ['required', Rule::in(['VINCULADO','LIBRE','PROYECTO'])],
             'modalidad'   => ['required', Rule::in(['PRESENCIAL','VIRTUAL','MIXTA'])],
 
-            // Condicional según `tipo`
-            'nivel'       => $nivelRules,
+            // 👇 Multiciclo:
+            // - Requerido si VINCULADO/PROYECTO
+            // - Prohibido si LIBRE
+            'niveles'     => [
+                'required_if:tipo,VINCULADO,PROYECTO',
+                'prohibited_unless:tipo,VINCULADO,PROYECTO',
+                'array',
+                'min:1',
+            ],
+            'niveles.*'   => [
+                'integer','between:1,10','distinct',
+                Rule::unique('vm_proyecto_ciclos','nivel')
+                    ->where(fn ($q) => $q->where('ep_sede_id', $ep)
+                                          ->where('periodo_id', $per)),
+            ],
 
             'horas_planificadas'         => ['required','integer','min:1','max:32767'],
             'horas_minimas_participante' => ['nullable','integer','min:0','max:32767'],
@@ -68,8 +86,13 @@ class ProyectoStoreRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'nivel.required'   => 'El nivel es obligatorio para proyectos vinculados.',
-            'nivel.prohibited' => 'Los proyectos de tipo LIBRE no deben incluir nivel.',
+            'niveles.required_if'         => 'Debe indicar al menos un ciclo (nivel) para proyectos vinculados.',
+            'niveles.prohibited_unless'   => 'Los proyectos de tipo LIBRE no deben incluir niveles.',
+            'niveles.array'               => 'El campo niveles debe ser un arreglo.',
+            'niveles.min'                 => 'Debe indicar al menos un nivel.',
+            'niveles.*.between'           => 'Cada nivel debe estar entre 1 y 10.',
+            'niveles.*.distinct'          => 'Los niveles no deben repetirse.',
+            'niveles.*.unique'            => 'El nivel :input ya está ocupado en este período y sede.',
         ];
     }
 }

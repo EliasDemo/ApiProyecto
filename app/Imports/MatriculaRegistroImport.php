@@ -110,7 +110,7 @@ class MatriculaRegistroImport implements ToCollection, WithHeadingRow
             // Ya hay expediente → usar su usuario
             $user = $exp->user;
 
-            // Si está en otra EP‑SEDE, migrar
+            // Si está en otra EP-SEDE, migrar
             if ($exp->ep_sede_id !== $this->epSedeId) {
                 $exp->ep_sede_id = $this->epSedeId;
                 $exp->save();
@@ -421,26 +421,56 @@ class MatriculaRegistroImport implements ToCollection, WithHeadingRow
         return null;
     }
 
+    // ========= splitName corregido (2 primeros = apellidos, resto = nombres) =========
     private function splitName(?string $full): array
     {
         $full = trim((string)$full);
-        if ($full === '') return ['first_name' => 'N/A', 'last_name' => 'N/A'];
+        if ($full === '') {
+            return ['first_name' => 'N/A', 'last_name' => 'N/A'];
+        }
 
+        // Normalizar espacios
+        $full = preg_replace('/\s+/', ' ', $full);
+
+        // Caso con coma: "APELLIDOS, NOMBRES"
         if (str_contains($full, ',')) {
-            [$last, $first] = array_map('trim', explode(',', $full, 2));
+            [$left, $right] = array_map('trim', explode(',', $full, 2));
+            $last  = $left ?: 'N/A';
+            $first = $right ?: 'N/A';
+
             return [
-                'first_name' => $first !== '' ? $first : 'N/A',
-                'last_name'  => $last  !== '' ? $last  : 'N/A',
+                'first_name' => $first,
+                'last_name'  => $last,
             ];
         }
 
+        // Sin coma → separar por espacios
         $parts = array_values(array_filter(explode(' ', $full), fn($p) => $p !== ''));
-        if (count($parts) === 1) return ['first_name' => $parts[0], 'last_name' => 'N/A'];
-        if (count($parts) === 2) return ['first_name' => $parts[1], 'last_name' => 'N/A'];
+        $count = count($parts);
 
-        $last  = $parts[count($parts)-2].' '.$parts[count($parts)-1];
-        $first = implode(' ', array_slice($parts, 0, -2));
-        return ['first_name' => $first, 'last_name' => $last];
+        if ($count === 1) {
+            return [
+                'first_name' => $parts[0],
+                'last_name'  => 'N/A',
+            ];
+        }
+
+        if ($count === 2) {
+            // Heurística simple: "APELLIDO NOMBRE"
+            return [
+                'first_name' => $parts[1],
+                'last_name'  => $parts[0],
+            ];
+        }
+
+        // Heurística hispana: los 2 primeros son apellidos, el resto son nombres
+        $last  = $parts[0].' '.$parts[1];
+        $first = implode(' ', array_slice($parts, 2));
+
+        return [
+            'first_name' => $first,
+            'last_name'  => $last,
+        ];
     }
 
     private function username(?string $usuario, ?string $documento): string

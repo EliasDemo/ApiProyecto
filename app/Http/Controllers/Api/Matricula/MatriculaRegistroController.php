@@ -100,7 +100,7 @@ class MatriculaRegistroController extends Controller
                 ]);
             }
 
-            // 🔄 Limpia el caché de permisos/roles
+            // Limpia el caché de permisos/roles
             app(PermissionRegistrar::class)->forgetCachedPermissions();
 
             // Congelar encabezados (nuestro import ya los normaliza)

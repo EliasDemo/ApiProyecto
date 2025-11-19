@@ -30,6 +30,89 @@ class AsistenciaService
     // 🔐 Permiso único reutilizado para todas las gestiones
     public const PERM_MANAGE_EP_SEDE = 'ep.manage.ep_sede';
 
+    // =========================================================
+    // Helpers de hora/fecha (evitan Double time specification)
+    // =========================================================
+
+    /** Normaliza "H:i" a "H:i:s". Devuelve null si no es válida. */
+    private function normalizeHora(?string $t): ?string
+    {
+        if (!$t) return null;
+        if (preg_match('/^\d{2}:\d{2}$/', $t)) return $t . ':00';
+        if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $t)) return $t;
+        try {
+            return Carbon::parse($t)->format('H:i:s');
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Crea un Carbon a partir de una fecha (date|datetime|string|Carbon)
+     * y una hora HH:MM[:SS], sin concatenar strings.
+     */
+    public function at(string|\DateTimeInterface $fecha, string $hhmmss): Carbon
+    {
+        $base = $fecha instanceof Carbon ? $fecha->copy() : Carbon::parse($fecha);
+        $h    = $this->normalizeHora($hhmmss) ?? '00:00:00';
+        return $base->copy()->setTimeFromTimeString($h);
+    }
+
+    /**
+     * Límites REALES de la sesión [inicio, fin] (sin buffers).
+     * - Si cruza medianoche, ajusta fin +1 día.
+     * - Si falta alguna hora, da un rango razonable.
+     * @return array{0:Carbon,1:Carbon}
+     */
+    public function boundsForSesion(VmSesion $sesion): array
+    {
+        $base = $sesion->fecha instanceof Carbon
+            ? $sesion->fecha->copy()
+            : Carbon::parse($sesion->fecha ?: now()->toDateString());
+
+        $hi = $this->normalizeHora($sesion->hora_inicio);
+        $hf = $this->normalizeHora($sesion->hora_fin);
+
+        if ($hi && $hf) {
+            $start = $base->copy()->setTimeFromTimeString($hi);
+            $end   = $base->copy()->setTimeFromTimeString($hf);
+            if ($end->lessThan($start)) $end->addDay();
+            return [$start, $end];
+        }
+
+        if ($hi) {
+            $start = $base->copy()->setTimeFromTimeString($hi);
+            $end   = $start->copy()->addHour(); // fallback: 1h
+            return [$start, $end];
+        }
+
+        if ($hf) {
+            $end   = $base->copy()->setTimeFromTimeString($hf);
+            $start = $end->copy()->subHour(); // fallback: 1h antes
+            return [$start, $end];
+        }
+
+        // Sin horas: todo el día
+        return [$base->copy()->startOfDay(), $base->copy()->endOfDay()];
+    }
+
+    /**
+     * Ventana de check-in: [inicio-1h, fin+1h] (si hay horas); si no, todo el día.
+     * @return array{0:Carbon,1:Carbon}
+     */
+    public function timeWindowForSesion(VmSesion $sesion): array
+    {
+        [$start, $end] = $this->boundsForSesion($sesion);
+        return [$start->copy()->subHour(), $end->copy()->addHour()];
+    }
+
+    /** Minutos reales de la sesión (corrigiendo cruce de medianoche). */
+    public function minutosSesion(VmSesion $sesion): int
+    {
+        [$start, $end] = $this->boundsForSesion($sesion);
+        return $start->diffInMinutes($end);
+    }
+
     // =========================
     // TOKENS (REQUIEREN PERMISO)
     // =========================
@@ -74,7 +157,7 @@ class AsistenciaService
     }
 
     /**
-     * Token MANUAL alineado a la sesión (±1h).
+     * Token MANUAL alineado a la sesión (frontera real, sin buffers).
      * 🔐 Requiere: ep.manage.ep_sede.
      */
     public function generarTokenManualAlineado(
@@ -85,7 +168,7 @@ class AsistenciaService
         $epSedeId = $this->epSedeIdDesdeSesion($sesion);
         $this->assertCanManageEpSede($actor, $epSedeId);
 
-        [$start, $end] = $this->timeWindowForSesion($sesion);
+        [$start, $end] = $this->boundsForSesion($sesion);
 
         return DB::transaction(function () use ($sesion, $creadoPor, $start, $end, $actor) {
             $t = new VmQrToken();
@@ -111,7 +194,11 @@ class AsistenciaService
     public function checkVentana(VmQrToken $t): void
     {
         $now = now();
-        if (!$t->activo || ($t->usable_from && $now->lt($t->usable_from)) || ($t->expires_at && $now->gt($t->expires_at))) {
+        if (
+            !$t->activo ||
+            ($t->usable_from && $now->lt($t->usable_from)) ||
+            ($t->expires_at && $now->gt($t->expires_at))
+        ) {
             throw ValidationException::withMessages(['token' => 'VENTANA_INVALIDA']);
         }
         if (!is_null($t->max_usos) && $t->usos >= $t->max_usos) {
@@ -141,83 +228,83 @@ class AsistenciaService
     }
 
     // =========================
-    // UTILIDADES FECHAS (NO requieren permiso)
-    // =========================
-
-    public function minutosSesion(VmSesion $sesion): int
-    {
-        if ($sesion->hora_inicio && $sesion->hora_fin) {
-            $ini = Carbon::createFromFormat('H:i:s', $sesion->hora_inicio);
-            $fin = Carbon::createFromFormat('H:i:s', $sesion->hora_fin);
-            return max(0, $ini->diffInMinutes($fin, false));
-        }
-        return 0;
-    }
-
-    /** Devuelve [inicio-1h, fin+1h] (si hay horas); si no, todo el día. */
-    public function timeWindowForSesion(VmSesion $sesion): array
-    {
-        $fecha = $sesion->fecha ? Carbon::parse($sesion->fecha)->toDateString() : now()->toDateString();
-
-        $norm = static function (?string $t): ?string {
-            if (!$t) return null;
-            if (preg_match('/^\d{2}:\d{2}$/', $t)) return $t.':00';
-            if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $t)) return $t;
-            try { return Carbon::parse($t)->format('H:i:s'); } catch (\Throwable) { return null; }
-        };
-
-        $hi = $norm($sesion->hora_inicio);
-        $hf = $norm($sesion->hora_fin);
-
-        if ($hi && $hf) {
-            return [Carbon::parse("$fecha $hi")->subHour(), Carbon::parse("$fecha $hf")->addHour()];
-        }
-        if ($hi) {
-            $b = Carbon::parse("$fecha $hi");
-            return [$b->copy()->subHour(), $b->copy()->addHours(2)];
-        }
-        if ($hf) {
-            $b = Carbon::parse("$fecha $hf");
-            return [$b->copy()->subHours(2), $b->copy()->addHour()];
-        }
-        return [Carbon::parse("$fecha 00:00:00"), Carbon::parse("$fecha 23:59:59")];
-    }
-
-    // =========================
     // RESOLUCIONES ESTRUCTURALES (NO requieren permiso)
     // =========================
 
-    /** [ptype, pid, ep_sede_id, periodo_id] detectados a partir de la sesión. */
+    /**
+     * [ptype, pid, ep_sede_id, periodo_id] detectados a partir de la sesión.
+     */
     protected function datosDesdeSesion(VmSesion $sesion): array
     {
-        // 1) morphTo
-        $owner = $sesion->sessionable; // VmProceso | VmEvento | null
+        $owner = $sesion->sessionable; // VmProceso | VmEvento | VmProyecto | null
 
+        // ───── Sesión de PROCESO (Proyecto) ─────
         if ($owner instanceof VmProceso) {
             $owner->loadMissing('proyecto');
             $p = $owner->proyecto;
-            if ($p) return [VmProyecto::class, (int)$p->id, (int)$p->ep_sede_id, (int)$p->periodo_id];
+            if ($p) {
+                return [
+                    VmProyecto::class,
+                    (int) $p->id,
+                    (int) $p->ep_sede_id,
+                    (int) $p->periodo_id,
+                ];
+            }
         }
 
+        // ───── Sesión directamente sobre PROYECTO (por si acaso) ─────
+        if ($owner instanceof VmProyecto) {
+            return [
+                VmProyecto::class,
+                (int) $owner->id,
+                (int) $owner->ep_sede_id,
+                (int) $owner->periodo_id,
+            ];
+        }
+
+        // ───── Sesión de EVENTO ─────
         if ($owner instanceof VmEvento) {
-            return [VmEvento::class, (int)$owner->id, (int)$owner->ep_sede_id, (int)$owner->periodo_id];
+            return [
+                VmEvento::class,
+                (int) $owner->id,
+                $owner->ep_sede_id ? (int) $owner->ep_sede_id : null,
+                (int) $owner->periodo_id,
+            ];
         }
 
-        // 2) Fallback robusto
+        // Fallback por si no está cargada la relación morph
         $type = strtolower((string) $sesion->sessionable_type);
         $sid  = (int) $sesion->sessionable_id;
 
         if (str_contains($type, 'proceso')) {
             $row = DB::table('vm_procesos as pr')
                 ->join('vm_proyectos as p', 'p.id', '=', 'pr.proyecto_id')
-                ->select('p.id as pid','p.ep_sede_id','p.periodo_id')
-                ->where('pr.id', $sid)->first();
-            if ($row) return [VmProyecto::class, (int)$row->pid, (int)$row->ep_sede_id, (int)$row->periodo_id];
+                ->select('p.id as pid', 'p.ep_sede_id', 'p.periodo_id')
+                ->where('pr.id', $sid)
+                ->first();
+
+            if ($row) {
+                return [
+                    VmProyecto::class,
+                    (int) $row->pid,
+                    (int) $row->ep_sede_id,
+                    (int) $row->periodo_id,
+                ];
+            }
         }
 
         if (str_contains($type, 'evento')) {
-            $row = DB::table('vm_eventos')->select('id','ep_sede_id','periodo_id')->where('id', $sid)->first();
-            if ($row) return [VmEvento::class, (int)$row->id, (int)$row->ep_sede_id, (int)$row->periodo_id];
+            // Aquí YA NO leemos ep_sede_id de la tabla (no existe).
+            // Usamos el modelo + accessor ep_sede_id.
+            $ev = VmEvento::find($sid);
+            if ($ev) {
+                return [
+                    VmEvento::class,
+                    (int) $ev->id,
+                    $ev->ep_sede_id ? (int) $ev->ep_sede_id : null,
+                    (int) $ev->periodo_id,
+                ];
+            }
         }
 
         return [null, null, null, null];
@@ -230,12 +317,12 @@ class AsistenciaService
         return $ep;
     }
 
-    /** sessionable → participable (Proyecto para sesiones de Proceso; Evento para sesiones de Evento). */
+    /** sessionable → participable (Proyecto para Proceso; Evento para Evento). */
     public function participableDesdeSesion(VmSesion $sesion): array
     {
         [$ptype, $pid] = $this->datosDesdeSesion($sesion);
-        if ($ptype === VmProyecto::class) return [VmProyecto::class, (int)$pid];
-        if ($ptype === VmEvento::class)   return [VmEvento::class,   (int)$pid];
+        if ($ptype === VmProyecto::class) return [VmProyecto::class, (int) $pid];
+        if ($ptype === VmEvento::class)   return [VmEvento::class,   (int) $pid];
         return [null, null];
     }
 
@@ -243,11 +330,6 @@ class AsistenciaService
     // EXPEDIENTES (permiso solo para terceros)
     // =========================
 
-    /**
-     * Resolver expediente de un user dentro de una EP-Sede.
-     * - Si $actor === $user => NO requiere permiso.
-     * - Si $actor !== $user => 🔐 requiere ep.manage.ep_sede.
-     */
     public function resolverExpedientePorUser(User $actor, User $user, ?int $epSedeId): ?ExpedienteAcademico
     {
         if (!$epSedeId) return null;
@@ -261,10 +343,6 @@ class AsistenciaService
             ->first();
     }
 
-    /**
-     * Resolver expediente por DNI o código estudiantil en una EP-Sede.
-     * 🔐 Requiere ep.manage.ep_sede (acceso a datos de terceros).
-     */
     public function resolverExpedientePorIdentificador(User $actor, string $dniOCodigo, ?int $epSedeId): ?ExpedienteAcademico
     {
         if (!$epSedeId) return null;
@@ -333,8 +411,10 @@ class AsistenciaService
             $a->meta = array_merge($prev, $meta ?? []);
             $a->save();
 
+            // Incrementar usos del token
             if ($token) {
-                $token->increment('usos');
+                $token->usos = (int) $token->usos + 1;
+                $token->save();
             }
 
             return $a->refresh();
@@ -363,7 +443,7 @@ class AsistenciaService
     }
 
     // =========================
-    // Registro de horas (NO requiere permiso directo; se valida en validarAsistencia)
+    // Registro de horas
     // =========================
     protected function crearOActualizarRegistroHora(VmAsistencia $a, int $minutos): void
     {
@@ -371,13 +451,17 @@ class AsistenciaService
         [$ptype, $pid, $epSedeId, $periodoId] = $this->datosDesdeSesion($sesion);
         if (!$ptype || !$pid || !$epSedeId || !$periodoId) return;
 
+        // Fecha = día de INICIO de la sesión
+        [$start] = $this->boundsForSesion($sesion);
+        $fecha = $start->toDateString();
+
         $reg = RegistroHora::firstOrNew(['asistencia_id' => $a->id]);
 
         $reg->fill([
             'expediente_id'  => $a->expediente_id,
             'ep_sede_id'     => $epSedeId,
             'periodo_id'     => $periodoId,
-            'fecha'          => $sesion->fecha,
+            'fecha'          => $fecha,
             'minutos'        => $minutos,
             'actividad'      => 'Asistencia sesión '.$sesion->id,
             'estado'         => 'APROBADO',
@@ -397,9 +481,7 @@ class AsistenciaService
     // Helpers de autorización
     // =========================
 
-    /**
-     * Lanza AuthorizationException si el actor no puede gestionar la EP-Sede.
-     */
+    /** Lanza AuthorizationException si el actor no puede gestionar la EP-Sede. */
     protected function assertCanManageEpSede(User $actor, ?int $epSedeId): void
     {
         if (!$epSedeId) {
@@ -408,7 +490,5 @@ class AsistenciaService
         if (!$actor->can(self::PERM_MANAGE_EP_SEDE)) {
             throw new AuthorizationException('NO_AUTORIZADO_EP_SEDE');
         }
-        // Si usas Spatie Teams/tenancy, aquí podrías validar team=EP-Sede:
-        // if (! $actor->can(self::PERM_MANAGE_EP_SEDE, $epSedeId)) { ... }
     }
 }

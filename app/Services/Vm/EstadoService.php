@@ -74,7 +74,7 @@ class EstadoService
 
             $new = $this->stateFromWindow($total, $mi, $mf, $now);
 
-            // Corrección de consistencia
+            // Correcciones de consistencia
             $fixReason = null;
             if ($new === 'PLANIFICADO' && $total > 0) {
                 if ($hasPast && $hasFuture) { $new = 'EN_CURSO'; $fixReason = 'fix: pasadas y futuras'; }
@@ -118,7 +118,6 @@ class EstadoService
 
             $new = $this->stateFromWindow($total, $mi, $mf, $now);
 
-            // Corrección de consistencia (clave)
             $fixReason = null;
             if ($new === 'PLANIFICADO' && $total > 0) {
                 if ($hasPast && $hasFuture) { $new = 'EN_CURSO'; $fixReason = 'fix: pasadas y futuras'; }
@@ -214,14 +213,15 @@ class EstadoService
      */
     private function computeWindowAndFlags(EloquentBuilder|Relation $sessionsQ, Carbon $now): array
     {
+        // NOTA: usamos SQL con DATE (fecha) + TIME (hora_*), sin concatenaciones en PHP
         $qb = $sessionsQ instanceof Relation ? $sessionsQ->getQuery() : $sessionsQ;
         $nowStr = $now->format('Y-m-d H:i:s');
 
         $agg = (clone $qb)
             ->selectRaw("
                 COUNT(*) AS total,
-                MIN(TIMESTAMP(CONCAT(fecha,' ',hora_inicio))) AS mi,
-                MAX(TIMESTAMP(CONCAT(fecha,' ',hora_fin)))    AS mf
+                MIN(TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_inicio AS CHAR)))) AS mi,
+                MAX(TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_fin AS CHAR))))    AS mf
             ")
             ->first();
 
@@ -230,11 +230,11 @@ class EstadoService
         $mf    = $agg->mf ? Carbon::parse($agg->mf) : null;
 
         $hasPast = (clone $qb)
-            ->whereRaw("TIMESTAMP(CONCAT(fecha,' ',hora_fin)) <= ?", [$nowStr])
+            ->whereRaw("TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_fin AS CHAR))) <= ?", [$nowStr])
             ->exists();
 
         $hasFuture = (clone $qb)
-            ->whereRaw("TIMESTAMP(CONCAT(fecha,' ',hora_inicio)) >  ?", [$nowStr])
+            ->whereRaw("TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_inicio AS CHAR))) >  ?", [$nowStr])
             ->exists();
 
         $hasRun = (clone $qb)
@@ -256,15 +256,15 @@ class EstadoService
         // 1) PLANIFICADO → EN_CURSO
         $started = (clone $qb)
             ->where('estado', 'PLANIFICADO')
-            ->whereRaw("TIMESTAMP(CONCAT(fecha,' ',hora_inicio)) <= ?", [$nowStr])
-            ->whereRaw("TIMESTAMP(CONCAT(fecha,' ',hora_fin)) >  ?", [$nowStr])
+            ->whereRaw("TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_inicio AS CHAR))) <= ?", [$nowStr])
+            ->whereRaw("TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_fin AS CHAR))) >  ?", [$nowStr])
             ->update(['estado' => 'EN_CURSO']);
 
-        // 2) PLANIFICADO|EN_CURSO → CERRADO  (evita cierre si fin==inicio en el mismo tick)
+        // 2) PLANIFICADO|EN_CURSO → CERRADO (evita cierre si fin==inicio en el mismo tick)
         $closed = (clone $qb)
             ->whereIn('estado', ['PLANIFICADO', 'EN_CURSO'])
-            ->whereRaw("TIMESTAMP(CONCAT(fecha,' ',hora_fin)) <= ?", [$nowStr])
-            ->whereRaw("TIMESTAMP(CONCAT(fecha,' ',hora_inicio)) <  ?", [$nowStr])
+            ->whereRaw("TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_fin AS CHAR))) <= ?", [$nowStr])
+            ->whereRaw("TIMESTAMP(CONCAT(CAST(fecha AS CHAR), ' ', CAST(hora_inicio AS CHAR))) <  ?", [$nowStr])
             ->update(['estado' => 'CERRADO']);
 
         return [$started, $closed];

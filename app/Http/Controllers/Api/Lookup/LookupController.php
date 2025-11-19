@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\EpSede;
 use App\Models\PeriodoAcademico;
 use Illuminate\Http\Request;
-use Illuminate\Support\Arr;
 
 class LookupController extends Controller
 {
@@ -22,7 +21,7 @@ class LookupController extends Controller
      */
     public function epSedes(Request $req)
     {
-        $user = $req->user();
+        $user  = $req->user();
         $q     = trim((string) $req->query('q', ''));
         $limit = (int) $req->query('limit', 50);
 
@@ -46,7 +45,7 @@ class LookupController extends Controller
                     $sub->where('estado', 'ACTIVO');
                 }
                 if ($soloStaff) {
-                    $allowed = $roles ?: ['COORDINADOR','ENCARGADO'];
+                    $allowed = $roles ?: ['COORDINADOR', 'ENCARGADO'];
                     $sub->whereIn('rol', $allowed);
                 }
             });
@@ -67,7 +66,7 @@ class LookupController extends Controller
                 $label = "{$ep->escuelaProfesional?->nombre} — {$ep->sede?->nombre}";
                 return [
                     'id'      => (int) $ep->id,
-                    'label'   => $label, // "escuela - sede"
+                    'label'   => $label, // "escuela — sede"
                     'escuela' => $ep->escuelaProfesional?->nombre,
                     'sede'    => $ep->sede?->nombre,
                 ];
@@ -79,13 +78,14 @@ class LookupController extends Controller
     /**
      * GET /api/lookups/periodos
      * Params:
-     *  - q, limit
-     *  - solo_activos: bool -> EN_CURSO
+     *  - q: string
+     *  - limit: int
+     *  - solo_activos: bool (filtra estado EN_CURSO)
      */
     public function periodos(Request $req)
     {
         $q           = trim((string) $req->query('q', ''));
-        $soloActivos = (bool) $req->boolean('solo_activos', false);
+        $soloActivos = $req->boolean('solo_activos', false);
         $limit       = (int) $req->query('limit', 50);
 
         $items = PeriodoAcademico::query()
@@ -98,16 +98,25 @@ class LookupController extends Controller
             ->orderByDesc('fecha_inicio')
             ->limit($limit)
             ->get()
-            ->map(function ($p) {
+            ->map(function (PeriodoAcademico $p) {
+                // Formateo seguro de fechas (evita warnings del analizador estático)
+                $fi = $p->fecha_inicio instanceof \DateTimeInterface
+                    ? $p->fecha_inicio->format('Y-m-d')
+                    : (string) $p->fecha_inicio;
+
+                $ff = $p->fecha_fin instanceof \DateTimeInterface
+                    ? $p->fecha_fin->format('Y-m-d')
+                    : (string) $p->fecha_fin;
+
                 return [
                     'id'           => (int) $p->id,
                     'label'        => "{$p->anio} - {$p->ciclo}", // "año - ciclo"
                     'anio'         => (int) $p->anio,
                     'ciclo'        => (int) $p->ciclo,
-                    'estado'       => $p->estado, // PLANIFICADO | EN_CURSO | CERRADO
+                    'estado'       => (string) $p->estado,        // PLANIFICADO | EN_CURSO | CERRADO
                     'es_actual'    => (bool) $p->es_actual,
-                    'fecha_inicio' => $p->fecha_inicio->toDateString(),
-                    'fecha_fin'    => $p->fecha_fin->toDateString(),
+                    'fecha_inicio' => $fi,
+                    'fecha_fin'    => $ff,
                 ];
             });
 

@@ -25,6 +25,10 @@ return new class extends Migration
             // Seguridad
             $table->string('password');
 
+            // Seguridad adicional: control de intentos fallidos
+            $table->unsignedSmallInteger('failed_login_attempts')->default(0);
+            $table->timestamp('login_blocked_until')->nullable();
+
             // Perfil
             $table->string('profile_photo')->nullable();
 

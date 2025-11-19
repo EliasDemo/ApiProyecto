@@ -53,6 +53,13 @@ class EventoImagenController extends Controller
             return response()->json(['ok' => false, 'message' => 'No autorizado para este evento.'], 403);
         }
 
+        if (in_array($evento->estado, ['CERRADO', 'CANCELADO'], true)) {
+            return response()->json([
+                'ok'      => false,
+                'message' => 'No se pueden subir imágenes de un evento cerrado o cancelado.',
+            ], 422);
+        }
+
         $request->validate([
             'file' => ['required', 'file', 'image', 'max:5120'], // 5MB
         ]);
@@ -98,6 +105,13 @@ class EventoImagenController extends Controller
 
         if (!$this->userCanManageEvento($user->id, $evento)) {
             return response()->json(['ok' => false, 'message' => 'No autorizado para este evento.'], 403);
+        }
+
+        if (in_array($evento->estado, ['CERRADO', 'CANCELADO'], true)) {
+            return response()->json([
+                'ok'      => false,
+                'message' => 'No se pueden eliminar imágenes de un evento cerrado o cancelado.',
+            ], 422);
         }
 
         if ($imagen->imageable_type !== VmEvento::class || (int) $imagen->imageable_id !== (int) $evento->id) {

@@ -3,7 +3,6 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
@@ -26,18 +25,17 @@ return new class extends Migration
                 ->onDelete('restrict');
 
             // Datos principales
-            $table->string('codigo')->unique();     // UK global
+            $table->string('codigo')->unique(); // UK global
             $table->string('titulo');
             $table->text('descripcion');
 
             // Catálogos
-            $table->enum('tipo', ['VINCULADO','LIBRE'])->default('VINCULADO');
-            $table->enum('modalidad', ['PRESENCIAL', 'VIRTUAL', 'MIXTA'])->default('PRESENCIAL');
-            $table->enum('estado', ['PLANIFICADO', 'EN_CURSO', 'CERRADO', 'CANCELADO'])->default('PLANIFICADO');
+            // Nota: incluyo 'PROYECTO' por compatibilidad con tu código. Si no lo usas, puedes quitarlo.
+            $table->enum('tipo', ['VINCULADO','LIBRE','PROYECTO'])->default('VINCULADO');
+            $table->enum('modalidad', ['PRESENCIAL','VIRTUAL','MIXTA'])->default('PRESENCIAL');
+            $table->enum('estado', ['PLANIFICADO','EN_CURSO','CERRADO','CANCELADO'])->default('PLANIFICADO');
 
-            // Nivel (1..10) — en LIBRE debe ser NULL, en VINCULADO es requerido (1..10)
-            $table->unsignedTinyInteger('nivel')->nullable(); // 👈 ahora nullable
-
+            // 👇 SIN columna 'nivel' (se modela en vm_proyecto_ciclos)
             // Horas
             $table->unsignedSmallInteger('horas_planificadas');
             $table->unsignedSmallInteger('horas_minimas_participante')->nullable();
@@ -46,44 +44,16 @@ return new class extends Migration
             $table->index('ep_sede_id');
             $table->index('periodo_id');
             $table->index('estado');
-            $table->index(['periodo_id', 'nivel']); // apoyo para consultas por periodo/nivel
-
-            // Único: 1 proyecto por (ep_sede_id, periodo_id, nivel)
-            // Con nivel NULL (LIBRE) se permiten múltiples filas (MySQL/Postgres)
-            $table->unique(['ep_sede_id', 'periodo_id', 'nivel'], 'uk_vm_proy_ep_periodo_nivel');
+            $table->index(['ep_sede_id', 'periodo_id']); // útil para filtros combinados
 
             $table->timestamps();
         });
 
-        // CHECK: LIBRE => nivel IS NULL; VINCULADO => nivel entre 1..10
-        // (MySQL 8.0.16+ / PostgreSQL; en MySQL <8.0.16 se ignora sin error)
-        try {
-            DB::statement("
-                ALTER TABLE vm_proyectos
-                ADD CONSTRAINT chk_vm_proyectos_tipo_nivel
-                CHECK (
-                    (tipo = 'LIBRE' AND nivel IS NULL)
-                    OR
-                    (tipo = 'VINCULADO' AND nivel BETWEEN 1 AND 10)
-                )
-            ");
-        } catch (\Throwable $e) {
-            // Ignorar si el motor no soporta CHECK
-        }
+        // 👇 SIN CHECK tipo↔nivel (ya no aplica en multiciclo)
     }
 
     public function down(): void
     {
-        // Intentar quitar el CHECK si existe (Postgres / MySQL 8+)
-        try {
-            DB::statement('ALTER TABLE vm_proyectos DROP CONSTRAINT chk_vm_proyectos_tipo_nivel');
-        } catch (\Throwable $e) {
-            // MySQL puede requerir DROP CHECK ...; si no existe, ignorar
-            try {
-                DB::statement('ALTER TABLE vm_proyectos DROP CHECK chk_vm_proyectos_tipo_nivel');
-            } catch (\Throwable $e2) {}
-        }
-
         Schema::dropIfExists('vm_proyectos');
     }
 };

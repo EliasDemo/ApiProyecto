@@ -7,6 +7,8 @@ use App\Http\Requests\Auth\LoginRequest;
 use App\Http\Requests\Auth\LookupRequest;
 use App\Http\Resources\Auth\UserSummaryResource;
 use App\Http\Resources\Auth\AcademicoSummaryResource;
+use App\Http\Resources\Auth\UserLookupResource;
+use App\Http\Resources\Auth\AcademicoLookupResource;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
@@ -37,8 +39,8 @@ class AuthController extends Controller
 
         return response()->json([
             'ok'        => true,
-            'user'      => new UserSummaryResource($user),
-            'academico' => $expediente ? new AcademicoSummaryResource($expediente) : null,
+            'user'      => new UserLookupResource($user),
+            'academico' => $expediente ? new AcademicoLookupResource($expediente) : null,
         ]);
     }
 
@@ -50,13 +52,37 @@ class AuthController extends Controller
     {
         $data = $request->validated();
 
-        $user = User::query()->where('username', $data['username'])->first();
+        $user = User::query()
+            ->where('username', $data['username'])
+            ->first();
 
+        // Si hay usuario, primero verificamos si está bloqueado
+        if ($user && $user->isLoginBlocked()) {
+            $seconds = $user->secondsUntilLoginUnblocked();
+            $minutes = ceil($seconds / 60);
+
+            throw ValidationException::withMessages([
+                'credentials' => [
+                    "Demasiados intentos fallidos. Vuelva a intentarlo en {$minutes} minuto(s)."
+                ],
+            ]);
+        }
+
+        // Verificación de credenciales
         if (!$user || !Hash::check($data['password'], $user->password)) {
+
+            // Si existe el usuario, registramos intento fallido
+            if ($user) {
+                $user->registerFailedLoginAttempt();
+            }
+
             throw ValidationException::withMessages([
                 'credentials' => ['Credenciales inválidas.'],
             ]);
         }
+
+        // Credenciales correctas -> reseteamos intentos fallidos
+        $user->resetLoginAttempts();
 
         // Token (Sanctum)
         $token = $user->createToken('api')->plainTextToken;
@@ -68,9 +94,9 @@ class AuthController extends Controller
             ->first();
 
         return response()->json([
-            'ok'    => true,
-            'token' => $token,
-            'user'  => new UserSummaryResource($user),
+            'ok'        => true,
+            'token'     => $token,
+            'user'      => new UserSummaryResource($user),
             'academico' => $expediente ? new AcademicoSummaryResource($expediente) : null,
         ]);
     }
@@ -84,7 +110,7 @@ class AuthController extends Controller
         request()->user()?->currentAccessToken()?->delete();
 
         return response()->json([
-            'ok' => true,
+            'ok'      => true,
             'message' => 'Sesión cerrada.',
         ]);
     }
