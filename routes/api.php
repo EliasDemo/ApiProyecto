@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\Universidad\UniversidadController;
 use App\Http\Controllers\Api\Academico\EscuelaProfesionalApiController;
 use App\Http\Controllers\Api\Academico\FacultadApiController;
 use App\Http\Controllers\Api\Academico\SedeApiController;
+use App\Http\Controllers\Api\EpSede\EpSedeStaffContextController;
 use App\Http\Controllers\Api\Reportes\ReporteHorasController;
 
 // VM (Virtual Manager)
@@ -358,10 +359,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
 });
 
 Route::middleware(['auth:sanctum'])->group(function () {
-    Route::get ('/ep-sedes/{epSedeId}/staff',            [EpSedeStaffController::class, 'current']);
-    Route::post('/ep-sedes/{epSedeId}/staff/assign',     [EpSedeStaffController::class, 'assign']);
-    Route::post('/ep-sedes/{epSedeId}/staff/unassign',   [EpSedeStaffController::class, 'unassign']);
-    Route::post('/ep-sedes/{epSedeId}/staff/reinstate',  [EpSedeStaffController::class, 'reinstate']);
-    Route::post('/ep-sedes/{epSedeId}/staff/delegate',   [EpSedeStaffController::class, 'delegate']);
-    Route::get ('/ep-sedes/{epSedeId}/staff/history',    [EpSedeStaffController::class, 'history']);
+
+    // NUEVA RUTA NECESARIA
+    Route::get('/ep-sedes/staff/context',
+        [EpSedeStaffContextController::class, 'context']);
+
+    Route::get('/ep-sedes/{epSedeId}/staff', [EpSedeStaffController::class, 'current']);
+    Route::post('/ep-sedes/{epSedeId}/staff/assign', [EpSedeStaffController::class, 'assign']);
+    Route::post('/ep-sedes/{epSedeId}/staff/unassign', [EpSedeStaffController::class, 'unassign']);
+    Route::post('/ep-sedes/{epSedeId}/staff/reinstate', [EpSedeStaffController::class, 'reinstate']);
+    Route::post('/ep-sedes/{epSedeId}/staff/delegate', [EpSedeStaffController::class, 'delegate']);
+    Route::get('/ep-sedes/{epSedeId}/staff/history', [EpSedeStaffController::class, 'history']);
 });

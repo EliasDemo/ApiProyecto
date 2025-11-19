@@ -12,13 +12,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-
-        // CORS GLOBAL (esto es lo que reemplaza al Kernel antiguo)
         $middleware->use([
             \Illuminate\Http\Middleware\HandleCors::class,
         ]);
 
-        // Aliases de Spatie, etc.
         $middleware->alias([
             'role' => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
