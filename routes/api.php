@@ -9,7 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\File;
 
-
+use Illuminate\Support\Facades\Artisan;
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTROLADORES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -560,5 +560,29 @@ Route::get('/debug/laravel-log', function () {
     return response()->json([
         'ok' => true,
         'lines' => $lastLines,
+    ]);
+});
+
+Route::post('/debug/migrate-fresh', function (Request $request) {
+
+    // TOKEN SECRETO
+    if ($request->header('X-SECRET') !== env('MIGRATE_SECRET')) {
+        return response()->json([
+            'ok' => false,
+            'message' => 'Unauthorized'
+        ], 401);
+    }
+
+    // Ejecutar migración fresh
+    Artisan::call('migrate:fresh', [
+        '--force' => true
+    ]);
+
+    $output = Artisan::output();
+
+    return response()->json([
+        'ok' => true,
+        'message' => 'migrate:fresh ejecutado',
+        'output' => $output,
     ]);
 });
