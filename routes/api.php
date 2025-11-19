@@ -578,3 +578,9 @@ Route::post('/debug/migrate-fresh', function (Request $request) {
         'output' => $output,
     ]);
 });
+
+
+Route::get('/debug/migrate', function () {
+    Artisan::call('migrate', ['--force' => true]);
+    return Artisan::output();
+});
