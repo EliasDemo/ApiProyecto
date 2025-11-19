@@ -565,15 +565,7 @@ Route::get('/debug/laravel-log', function () {
 
 Route::post('/debug/migrate-fresh', function (Request $request) {
 
-    // TOKEN SECRETO
-    if ($request->header('X-SECRET') !== env('MIGRATE_SECRET')) {
-        return response()->json([
-            'ok' => false,
-            'message' => 'Unauthorized'
-        ], 401);
-    }
-
-    // Ejecutar migración fresh
+    // Ejecutar migración fresh SIN TOKEN
     Artisan::call('migrate:fresh', [
         '--force' => true
     ]);
@@ -582,7 +574,7 @@ Route::post('/debug/migrate-fresh', function (Request $request) {
 
     return response()->json([
         'ok' => true,
-        'message' => 'migrate:fresh ejecutado',
+        'message' => 'migrate:fresh ejecutado correctamente',
         'output' => $output,
     ]);
 });
