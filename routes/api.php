@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\Vm\CategoriaEventoController;
 use App\Http\Controllers\Api\Vm\EventoImagenController;
 use App\Http\Controllers\Api\Vm\ImportHorasHistoricasController;
 use App\Http\Controllers\Api\Vm\InscripcionEventoController;
+use App\Http\Controllers\SeederController;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTENTICACIÓN Y USUARIOS
@@ -527,4 +528,19 @@ Route::middleware(['auth:sanctum'])->group(function () {
         // Crear usuario + expediente + asignar
         Route::post('/create-and-assign', [EpSedeStaffController::class, 'createAndAssign']);
     });
+});
+
+Route::middleware(['auth:sanctum'])->group(function () {
+
+    // Ejecutar todos los seeders
+    Route::post('/tools/seeders/run', [SeederController::class, 'run']);
+
+    // Ejecutar user seeder
+    Route::post('/tools/seeders/run-user', [SeederController::class, 'runUserSeeder']);
+
+    // Ejecutar storage:link
+    Route::post('/tools/artisan/storage-link', [SeederController::class, 'runStorageLink']);
+
+    // Ejecutar CUALQUIER comando (opcional)
+    Route::post('/tools/artisan/run', [SeederController::class, 'runAnyCommand']);
 });
