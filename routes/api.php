@@ -44,7 +44,6 @@ use App\Http\Controllers\Api\Vm\EventoImagenController;
 use App\Http\Controllers\Api\Vm\ImportHorasHistoricasController;
 use App\Http\Controllers\Api\Vm\InscripcionEventoController;
 use App\Http\Controllers\Api\Vm\ProyectoFullController;
-use App\Http\Controllers\SeederController;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTENTICACIÓN Y USUARIOS
@@ -536,27 +535,32 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
 
 
-// Rutas alumno (dashboard)
+// ==========================================================
+// ALUMNO (Dashboard) – protegido
+// ==========================================================
 Route::middleware('auth:sanctum')
     ->prefix('alumno')
     ->group(function () {
         Route::get('feed', [DashboardController::class, 'index']);
     });
 
-// Rutas VM (eventos)
+
+// ==========================================================
+// EVENTOS FULL – protegido
+// ==========================================================
 Route::middleware('auth:sanctum')
-    ->prefix('vm')
+    ->prefix('eventos')
     ->group(function () {
-        Route::post('eventos/{evento}/inscribirse', [InscripcionEventoController::class, 'inscribirEvento']);
-        Route::get('eventos/mis', [InscripcionEventoController::class, 'misEventos']);
-        Route::get('eventos/{evento}/inscritos', [InscripcionEventoController::class, 'listarInscritos']);
-        Route::get('eventos/{evento}/candidatos', [InscripcionEventoController::class, 'listarCandidatos']);
+        Route::get('full', [EventoFullController::class, 'index']);
+        Route::get('{evento}/full', [EventoFullController::class, 'show']);
     });
 
-// Rutas VM (proyectos)
+// ==========================================================
+// PROYECTOS FULL – protegido
+// ==========================================================
 Route::middleware('auth:sanctum')
-    ->prefix('vm')
+    ->prefix('proyectos')
     ->group(function () {
-        Route::post('proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto']);
-        // ...
+        Route::get('full', [ProyectoFullController::class, 'index']);
+        Route::get('{proyecto}/full', [ProyectoFullController::class, 'show']);
     });
