@@ -5,12 +5,9 @@ use App\Http\Controllers\Api\EpSede\EpSedeStaffController;
 use App\Http\Controllers\Api\Matricula\MatriculaManualController;
 use App\Http\Controllers\Api\Matricula\MatriculaRegistroController;
 use App\Http\Controllers\Api\Reportes\HorasPorPeriodoController;
-use App\Http\Controllers\Api\Vm\AlumnoFeedController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\File;
 
-use Illuminate\Support\Facades\Artisan;
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTROLADORES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -539,15 +536,22 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
 
 
+// ─────────────────────────────────────────────
+// ALUMNO – DASHBOARD
+// ─────────────────────────────────────────────
 Route::middleware('auth:sanctum')->prefix('alumno')->group(function () {
-    Route::get('feed', [DashboardController::class, 'index']);
-    // (opcionales)
-    Route::get('eventos', [DashboardController::class, 'eventos']);
-    Route::get('proyectos', [DashboardController::class, 'proyectos']);
+
+    Route::get('/feed', [DashboardController::class, 'index']);
+
+    Route::get('/eventos', [DashboardController::class, 'eventos']);
+
+    Route::get('/proyectos', [DashboardController::class, 'proyectos']);
 });
 
-// Inscripciones (ya existentes)
+// ─────────────────────────────────────────────
+// INSCRIPCIONES VM
+// ─────────────────────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {
-    Route::post('vm/eventos/{evento}/inscribirse', [InscripcionEventoController::class, 'inscribirEvento']);
-    Route::post('vm/proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto']);
+    Route::post('/vm/eventos/{evento}/inscribirse', [InscripcionEventoController::class, 'inscribirEvento']);
+    Route::post('/vm/proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto']);
 });
