@@ -44,6 +44,7 @@ use App\Http\Controllers\Api\Vm\EventoImagenController;
 use App\Http\Controllers\Api\Vm\ImportHorasHistoricasController;
 use App\Http\Controllers\Api\Vm\InscripcionEventoController;
 use App\Http\Controllers\Api\Vm\ProyectoFullController;
+use App\Http\Controllers\Api\Vm\VmAlumnoInspectorController;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AUTENTICACIÓN Y USUARIOS
@@ -563,4 +564,19 @@ Route::middleware('auth:sanctum')
     ->group(function () {
         Route::get('full', [ProyectoFullController::class, 'index']);
         Route::get('{proyecto}/full', [ProyectoFullController::class, 'show']);
+    });
+
+
+    Route::middleware('auth:sanctum')
+    ->prefix('vm/inspeccion')
+    ->group(function () {
+        Route::get('/resumen',           [VmAlumnoInspectorController::class, 'resumenEpSede']);
+        Route::get('/alumno',            [VmAlumnoInspectorController::class, 'inspeccionarAlumno']);
+        Route::get('/proyectos',         [VmAlumnoInspectorController::class, 'proyectosPeriodoNivel']);
+
+        Route::post('/proyectos/inscribir',            [VmAlumnoInspectorController::class, 'inscribirEnProyecto']);
+        Route::post('/proyectos/asistencias/marcar',   [VmAlumnoInspectorController::class, 'marcarAsistenciasProyecto']);
+
+        Route::post('/eventos/{evento}/inscribir',      [VmAlumnoInspectorController::class, 'inscribirEnEventoManual']);
+        Route::patch('/eventos/participaciones/{participacion}', [VmAlumnoInspectorController::class, 'actualizarEstadoParticipacionEvento']);
     });
