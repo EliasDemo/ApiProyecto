@@ -579,4 +579,6 @@ Route::middleware('auth:sanctum')
 
         Route::post('/eventos/{evento}/inscribir',      [VmAlumnoInspectorController::class, 'inscribirEnEventoManual']);
         Route::patch('/eventos/participaciones/{participacion}', [VmAlumnoInspectorController::class, 'actualizarEstadoParticipacionEvento']);
+        Route::get('/proyectos/{proyecto}/sesiones', [VmAlumnoInspectorController::class, 'sesionesProyectoAlumno']);
+
     });

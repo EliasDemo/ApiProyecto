@@ -493,6 +493,105 @@ class VmAlumnoInspectorController extends Controller
         ], 200);
     }
 
+    public function sesionesProyectoAlumno(Request $request, VmProyecto $proyecto): JsonResponse
+    {
+        $actor = $this->requireAuth($request);
+
+        // Resolver EP-SEDE por permisos
+        $epSedeId = $this->resolverEpSedeIdOrFail($actor, $request->integer('ep_sede_id'));
+
+        if ($proyecto->ep_sede_id !== $epSedeId) {
+            return $this->fail(
+                'PROJECT_EP_SEDE_MISMATCH',
+                'El proyecto no pertenece a la EP-SEDE indicada.',
+                422,
+                ['proyecto_ep_sede_id' => $proyecto->ep_sede_id, 'ep_sede_id' => $epSedeId]
+            );
+        }
+
+        // Resolver expediente (alumno)
+        $exp = null; $metaNF = [];
+        if ($request->filled('expediente_id')) {
+            $exp = ExpedienteAcademico::where('ep_sede_id', $epSedeId)
+                ->where('id', $request->integer('expediente_id'))
+                ->first();
+        } else {
+            $codigo = (string) $request->input('codigo', '');
+            [$exp, $metaNF] = $this->resolveExpedienteSmart($epSedeId, $codigo);
+        }
+
+        if (!$exp) {
+            return $this->fail(
+                'EXPEDIENTE_NO_ENCONTRADO_EN_EP_SEDE',
+                'No se encontró el expediente para este proyecto.',
+                404,
+                $metaNF
+            );
+        }
+
+        // Procesos del proyecto (normalmente hay uno, pero hacemos general)
+        $procIds = VmProceso::where('proyecto_id', $proyecto->id)->pluck('id')->all();
+        if (empty($procIds)) {
+            return response()->json([
+                'ok'           => true,
+                'ep_sede_id'   => $epSedeId,
+                'proyecto_id'  => (int) $proyecto->id,
+                'expediente_id'=> (int) $exp->id,
+                'sesiones'     => [],
+            ], 200);
+        }
+
+        // Sesiones del proyecto
+        $sesiones = VmSesion::whereIn('proceso_id', $procIds)
+            ->orderBy('fecha')
+            ->orderBy('hora_inicio')
+            ->get();
+
+        if ($sesiones->isEmpty()) {
+            return response()->json([
+                'ok'           => true,
+                'ep_sede_id'   => $epSedeId,
+                'proyecto_id'  => (int) $proyecto->id,
+                'expediente_id'=> (int) $exp->id,
+                'sesiones'     => [],
+            ], 200);
+        }
+
+        // Asistencias del alumno en esas sesiones
+        $asis = VmAsistencia::where('expediente_id', $exp->id)
+            ->whereIn('sesion_id', $sesiones->pluck('id')->all())
+            ->get()
+            ->keyBy('sesion_id');
+
+        $items = $sesiones->map(function (VmSesion $s) use ($asis, $proyecto) {
+            $a = $asis->get($s->id);
+            return [
+                'id'            => (int) $s->id,
+                'fecha'         => (string) $s->fecha,
+                'hora_inicio'   => (string) $s->hora_inicio,
+                'hora_fin'      => (string) $s->hora_fin,
+                'estado_sesion' => $s->estado,
+                'proceso_id'    => (int) $s->proceso_id,
+                'proyecto_id'   => (int) $proyecto->id,
+                'asistencia'    => $a ? [
+                    'id'               => (int) $a->id,
+                    'estado'           => $a->estado,
+                    'check_in_at'      => $a->check_in_at ? $a->check_in_at->toDateTimeString() : null,
+                    'check_out_at'     => $a->check_out_at ? $a->check_out_at->toDateTimeString() : null,
+                    'minutos_validados'=> (int) $a->minutos_validados,
+                ] : null,
+            ];
+        })->values();
+
+        return response()->json([
+            'ok'           => true,
+            'ep_sede_id'   => $epSedeId,
+            'proyecto_id'  => (int) $proyecto->id,
+            'expediente_id'=> (int) $exp->id,
+            'sesiones'     => $items,
+        ], 200);
+    }
+
     // ========================= 3) Proyectos por período y nivel =========================
     //
     // GET /api/vm/inspeccion/proyectos
