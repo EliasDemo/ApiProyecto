@@ -536,22 +536,27 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
 
 
-// ─────────────────────────────────────────────
-// ALUMNO – DASHBOARD
-// ─────────────────────────────────────────────
-Route::middleware('auth:sanctum')->prefix('alumno')->group(function () {
+// Rutas alumno (dashboard)
+Route::middleware('auth:sanctum')
+    ->prefix('alumno')
+    ->group(function () {
+        Route::get('feed', [DashboardController::class, 'index']);
+    });
 
-    Route::get('/feed', [DashboardController::class, 'index']);
+// Rutas VM (eventos)
+Route::middleware('auth:sanctum')
+    ->prefix('vm')
+    ->group(function () {
+        Route::post('eventos/{evento}/inscribirse', [InscripcionEventoController::class, 'inscribirEvento']);
+        Route::get('eventos/mis', [InscripcionEventoController::class, 'misEventos']);
+        Route::get('eventos/{evento}/inscritos', [InscripcionEventoController::class, 'listarInscritos']);
+        Route::get('eventos/{evento}/candidatos', [InscripcionEventoController::class, 'listarCandidatos']);
+    });
 
-    Route::get('/eventos', [DashboardController::class, 'eventos']);
-
-    Route::get('/proyectos', [DashboardController::class, 'proyectos']);
-});
-
-// ─────────────────────────────────────────────
-// INSCRIPCIONES VM
-// ─────────────────────────────────────────────
-Route::middleware('auth:sanctum')->group(function () {
-    Route::post('/vm/eventos/{evento}/inscribirse', [InscripcionEventoController::class, 'inscribirEvento']);
-    Route::post('/vm/proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto']);
-});
+// Rutas VM (proyectos)
+Route::middleware('auth:sanctum')
+    ->prefix('vm')
+    ->group(function () {
+        Route::post('proyectos/{proyecto}/inscribirse', [InscripcionProyectoController::class, 'inscribirProyecto']);
+        // ...
+    });
